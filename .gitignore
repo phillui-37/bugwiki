@@ -6,3 +6,6 @@ core
 /reports/
 /archive/
 /bin/
+/templates/
+/AGENTS-snippet.md
+/INDEX.md

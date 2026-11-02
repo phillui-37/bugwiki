@@ -23,6 +23,7 @@ symptom to match on and the failed attempts to avoid.
 ```text
 ~/.agents/wiki/
   README.md                      router + index
+  INDEX.md                       index instead, when the store is a repo clone
   LESSONS.md                     rules that repeated (empty is a valid state)
   solutions/<domain>/<slug>.md   one bug per file
   templates/entry.md
@@ -84,6 +85,11 @@ Then append the block from `assets/AGENTS-block.md` to your agents instruction
 file (`~/.agents/AGENTS.md`, `AGENTS.md`, `CLAUDE.md` — whatever your host reads).
 That block is what makes the store live: search before debugging, write after a
 costly fix, bump when a page answers you.
+
+Cloning the repo *is* the store. `wiki index` then writes `INDEX.md` instead of
+touching this README, and `solutions/`, `reports/`, `archive/`, `bin/`,
+`templates/` and `LESSONS.md` are gitignored — so `git status` stays clean while
+you use it.
 
 Same store on both platforms: the frontmatter, the reports, the archive rules and
 the exit codes match. Only the helper differs — `scripts/wiki` (bash) or

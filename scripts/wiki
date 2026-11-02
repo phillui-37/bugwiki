@@ -109,7 +109,13 @@ cmd_index() {
     printf '# %s\n' "$(basename "$WIKI")" > "$readme"
   fi
   if ! rg -q '<!-- index:start -->' "$readme" 2>/dev/null; then
-    printf '\n## Index\n\n<!-- index:start -->\n<!-- index:end -->\n' >> "$readme"
+    # a repo clone keeps its README as documentation; the index is data
+    if [ -f "$WIKI/SKILL.md" ] && [ -d "$WIKI/scripts" ]; then
+      readme="$WIKI/INDEX.md"
+      [ -f "$readme" ] || printf '# Index\n\n<!-- index:start -->\n<!-- index:end -->\n' > "$readme"
+    else
+      printf '\n## Index\n\n<!-- index:start -->\n<!-- index:end -->\n' >> "$readme"
+    fi
   fi
   rf="$(mktemp)"
   while IFS= read -r f; do

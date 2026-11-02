@@ -246,7 +246,17 @@ function Invoke-Index {
     }
     $lines = @([System.IO.File]::ReadAllLines($readme))
     if (-not ($lines -contains '<!-- index:start -->')) {
-        $lines += @('', '## Index', '', '<!-- index:start -->', '<!-- index:end -->')
+        # a repo clone keeps its README as documentation; the index is data
+        if ((Test-Path (Join-Path $Wiki 'SKILL.md')) -and (Test-Path (Join-Path $Wiki 'scripts'))) {
+            $readme = Join-Path $Wiki 'INDEX.md'
+            if (Test-Path $readme) {
+                $lines = @([System.IO.File]::ReadAllLines($readme))
+            } else {
+                $lines = @('# Index', '', '<!-- index:start -->', '<!-- index:end -->')
+            }
+        } else {
+            $lines += @('', '## Index', '', '<!-- index:start -->', '<!-- index:end -->')
+        }
     }
 
     $rows = @()
