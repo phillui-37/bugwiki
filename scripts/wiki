@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# wiki — tiny helper for the agent bug/solution wiki.
+# Usage: wiki init [target] | wiki find <terms> | wiki new <domain> <slug>
+#        wiki index | wiki lint | wiki housekeep [--apply] | wiki list
+set -euo pipefail
+
+# resolve symlinks, so ~/.local/bin/wiki works
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+WIKI="${WIKI_HOME:-$(cd -P "$(dirname "$_src")/.." && pwd)}"
+TODAY="$(date +%Y-%m-%d)"
+
+# Housekeeping thresholds. Override any of them with the env var on the right.
+STALE_DAYS="${WIKI_STALE_DAYS:-180}"      # page whose last_verified is older than N days: verify or mark obsolete
+ARCHIVE_DAYS="${WIKI_ARCHIVE_DAYS:-90}"   # obsolete for N days: move out of solutions/ to archive/
+LESSONS_MAX="${WIKI_LESSONS_MAX:-12}"     # max table rows in LESSONS.md before it is too long
+DUP_JACCARD="${WIKI_DUP_JACCARD:-55}"     # oneliner token overlap percent that counts as a duplicate
+DUP_MIN_PAGES="${WIKI_DUP_MIN_PAGES:-8}"  # do not run the duplicate scan below this page count
+REPORTS_KEEP="${WIKI_REPORTS_KEEP:-30}"   # keep the newest N daily reports
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+field() { # field <file> <key>
+  awk -v k="$2" '
+    /^---[[:space:]]*$/ { n++; next }
+    n==1 && index($0, k":")==1 {
+      v=$0
+      sub("^"k":[[:space:]]*", "", v)
+      # a value that is only a trailing comment must read as empty
+      if (k != "title") {
+        sub(/#.*$/, "", v)
+        gsub(/[[:space:]]+$/, "", v)
+      }
+      print v; exit
+    }
+  ' "$1"
+}
+
+cmd_find() {
+  [ $# -gt 0 ] || die "usage: wiki find <terms>"
+  local q="$*" hits one ono st fixed
+  # literal search by default: a query like "[" must be text, not a broken regex
+  if [ "${WIKI_REGEX:-0}" = "1" ]; then fixed=""; else fixed="-F"; fi
+  hits="$(rg -il ${fixed:-} --glob '*.md' -- "$q" "$WIKI/solutions" 2>/dev/null)"
+  st=$?
+  if [ "$st" -gt 1 ]; then
+    printf 'search error (rg exit %s) for: %s\n' "$st" "$q" >&2
+    return 2
+  fi
+  [ "$st" -eq 0 ] || hits=""
+  # a slug is a search key too: match file names when the query is one word
+  case "$q" in
+    *" "*) ;;
+    *) hits="$hits
+$(find "$WIKI/solutions" -type f -iname "*$q*.md" 2>/dev/null)" ;;
+  esac
+  hits="$(printf '%s\n' "$hits" | sed '/^$/d' | sort -u)"
+  if [ -z "$hits" ]; then
+    printf 'no match for: %s\n' "$q"
+    printf 'try a shorter fragment, or: wiki list\n'
+    return 0
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "--- ${f#$WIKI/}  [$(field "$f" status), recurrence $(field "$f" recurrence)]"
+    one="$(field "$f" oneliner)"
+    if [ -n "$one" ]; then printf '    = %s\n' "$one"; fi
+    # the oneliner is already printed above; do not echo it twice
+    ono="$(rg -n '^oneliner:' "$f" | head -1 | cut -d: -f1)"
+    # a filename-only hit has no content match, and rg exit 1 must not kill the loop
+    { rg -in -m4 ${fixed:-} -- "$q" "$f" || true; } \
+      | awk -F: -v skip="${ono:-0}" '$1 != skip' | sed 's/^/    /' | head -4
+  done <<< "$hits"
+  return 0
+}
+
+cmd_list() {
+  local f
+  while IFS= read -r f; do
+    printf '%s\n' "${f#$WIKI/solutions/}" | sed 's/\.md$//'
+  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+}
+
+cmd_new() {
+  [ $# -eq 2 ] || die "usage: wiki new <domain> <slug>"
+  local domain="$1" slug="$2" dir="$WIKI/solutions/$1" file title
+  file="$dir/$slug.md"
+  [ -e "$file" ] && die "exists: $file"
+  mkdir -p "$dir"
+  title="$(printf '%s' "$slug" | tr '-' ' ')"
+  title="$(printf '%s' "$title" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+  # the template lines carry trailing comments, so replace the whole line
+  sed -e "s|^title:.*|title: $title|" \
+      -e "s|^first_seen:.*|first_seen: $TODAY|" \
+      -e "s|^last_seen:.*|last_seen: $TODAY|" \
+      -e "s|^last_verified:.*|last_verified: $TODAY|" \
+      "$WIKI/templates/entry.md" > "$file"
+  cmd_index
+  printf '%s\n' "$file"
+}
+
+cmd_index() {
+  local readme="$WIKI/README.md" tmp rf f
+  if [ ! -f "$readme" ]; then
+    printf '# %s\n' "$(basename "$WIKI")" > "$readme"
+  fi
+  if ! rg -q '<!-- index:start -->' "$readme" 2>/dev/null; then
+    printf '\n## Index\n\n<!-- index:start -->\n<!-- index:end -->\n' >> "$readme"
+  fi
+  rf="$(mktemp)"
+  while IFS= read -r f; do
+    printf '| [%s](%s) | %s | %s | %s |\n' \
+      "$(field "$f" title)" "${f#$WIKI/}" "$(basename "$(dirname "$f")")" \
+      "$(field "$f" status)" "$(field "$f" last_seen)" >> "$rf"
+  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+
+  tmp="$(mktemp)"
+  awk -v rf="$rf" '
+    /<!-- index:start -->/ {
+      print; print ""
+      print "| Page | Domain | Status | Last seen |"
+      print "| --- | --- | --- | --- |"
+      while ((getline l < rf) > 0) print l
+      skip=1; next
+    }
+    /<!-- index:end -->/ { skip=0 }
+    skip==1 { next }
+    { print }
+  ' "$readme" > "$tmp"
+  mv "$tmp" "$readme"
+  printf 'indexed %d entries\n' "$(wc -l < "$rf" | tr -d ' ')"
+  rm -f "$rf"
+}
+
+cmd_lint() {
+  local bad=0 adv=0 f status seen title epoch now rec
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    title="$(field "$f" title)"
+    status="$(field "$f" status)"
+    seen="$(field "$f" last_verified)"
+    [ -n "$seen" ] || seen="$(field "$f" last_seen)"
+    rec="$(field "$f" recurrence)"
+    if [ -z "$title" ]; then printf 'missing title: %s\n' "${f#$WIKI/}"; bad=1; fi
+    case "$status" in
+      verified|workaround|obsolete|unconfirmed) ;;
+      "") printf 'missing status: %s\n' "${f#$WIKI/}"; bad=1 ;;
+      *) printf 'bad status (%s): %s\n' "$status" "${f#$WIKI/}"; bad=1 ;;
+    esac
+    case "$rec" in
+      "") printf 'missing recurrence: %s\n' "${f#$WIKI/}"; bad=1 ;;
+      *[!0-9]*) printf 'bad recurrence (%s): %s\n' "$rec" "${f#$WIKI/}"; bad=1 ;;
+      *) if [ "$rec" -ge 2 ]; then printf 'promote to LESSONS.md (%s days): %s\n' "$rec" "${f#$WIKI/}"; adv=1; fi ;;
+    esac
+    if [ -n "$seen" ] && epoch="$(date -j -f %Y-%m-%d "$seen" +%s 2>/dev/null)"; then
+      if [ $(( (now - epoch) / 86400 )) -ge "$STALE_DAYS" ] && [ "$status" != obsolete ]; then
+        printf 'stale (%s days, %s): %s\n' "$(( (now - epoch) / 86400 ))" "$status" "${f#$WIKI/}"
+      fi
+    fi
+  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+  if [ "$bad" -eq 0 ] && [ "$adv" -eq 0 ]; then printf 'lint clean\n'; fi
+  [ "$bad" -eq 0 ] || return 1
+  return 0
+}
+
+cmd_housekeep() {
+  local apply="${1:-}" f status seen oseen epoch now age pages lessons_rows
+  local report archived=0 tsv
+  local verify_list="" promote_list="" dup_list="" archive_list="" odo_list="" collision_list=""
+  now="$(date +%s)"
+  mkdir -p "$WIKI/reports"
+  report="$WIKI/reports/$TODAY.md"
+
+  pages="$(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')"
+
+  # 1. obsolete long enough to leave circulation. Age is counted from
+  #    obsolete_since, not last_seen: marking a page obsolete must not archive it
+  #    the same day. A page without obsolete_since is reported, never moved.
+  while IFS= read -r f; do
+    status="$(field "$f" status)"
+    [ "$status" = obsolete ] || continue
+    oseen="$(field "$f" obsolete_since)"
+    if [ -z "$oseen" ]; then
+      odo_list="$odo_list- ${f#$WIKI/} (obsolete, no obsolete_since)\n"
+      continue
+    fi
+    epoch="$(date -j -f %Y-%m-%d "$oseen" +%s 2>/dev/null || echo "$now")"
+    age=$(( (now - epoch) / 86400 ))
+    if [ "$age" -ge "$ARCHIVE_DAYS" ]; then archive_list="$archive_list- ${f#$WIKI/} (obsolete ${age}d)\n"; fi
+  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+
+  if [ "$apply" = "--apply" ]; then
+    while IFS= read -r f; do
+      status="$(field "$f" status)"
+      [ "$status" = obsolete ] || continue
+      oseen="$(field "$f" obsolete_since)"
+      [ -n "$oseen" ] || continue
+      epoch="$(date -j -f %Y-%m-%d "$oseen" +%s 2>/dev/null || echo "$now")"
+      age=$(( (now - epoch) / 86400 ))
+      [ "$age" -ge "$ARCHIVE_DAYS" ] || continue
+      dest="$WIKI/archive/$(basename "$(dirname "$f")")"
+      mkdir -p "$dest"
+      if [ -e "$dest/$(basename "$f")" ]; then
+        # never overwrite an archived page; a human decides which one survives
+        collision_list="$collision_list- ${f#$WIKI/} -> archive/$(basename "$(dirname "$f")")/$(basename "$f") exists, skipped\n"
+        continue
+      fi
+      mv "$f" "$dest/"
+      archived=$((archived + 1))
+    done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+    archive_list=""
+    cmd_index >/dev/null
+    # keep the newest reports only
+    ls -1t "$WIKI/reports" 2>/dev/null | tail -n +$((REPORTS_KEEP + 1)) | while IFS= read -r old; do
+      rm -f "$WIKI/reports/$old"
+    done
+  fi
+
+  # 2. promote to LESSONS.md, and pages that went stale
+  while IFS= read -r f; do
+    local rec seen2
+    rec="$(field "$f" recurrence)"
+    case "$rec" in ''|*[!0-9]*) rec=1 ;; esac
+    if [ "$rec" -ge 2 ]; then promote_list="$promote_list- ${f#$WIKI/} (recurrence ${rec})\n"; fi
+    # validity, not recurrence: last_verified wins, last_seen is the fallback
+    seen2="$(field "$f" last_verified)"
+    [ -n "$seen2" ] || seen2="$(field "$f" last_seen)"
+    epoch="$(date -j -f %Y-%m-%d "${seen2:-$TODAY}" +%s 2>/dev/null || echo "$now")"
+    age=$(( (now - epoch) / 86400 ))
+    status="$(field "$f" status)"
+    if [ "$age" -ge "$STALE_DAYS" ] && [ "$status" != obsolete ]; then
+      verify_list="$verify_list- ${f#$WIKI/} (${age}d, ${status})\n"
+    fi
+  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+
+  # 3. duplicate candidates: token overlap on oneliner
+  if [ "$pages" -ge "$DUP_MIN_PAGES" ]; then
+    tsv="$(mktemp)"
+    while IFS= read -r f; do
+      printf '%s\t%s\n' "${f#$WIKI/}" "$(field "$f" oneliner)" >> "$tsv"
+    done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+    dup_list="$(awk -F'\t' -v th="$DUP_JACCARD" '
+      {
+        n++; path[n]=$1
+        m=split(tolower($2), w, /[^a-z0-9]+/)
+        # a set, not a bag: a repeated word must not inflate the overlap
+        for (i=1;i<=m;i++) if (length(w[i])>3 && !((n SUBSEP w[i]) in S)) { S[n SUBSEP w[i]]=1; T[n, ++c[n]]=w[i] }
+      }
+      END {
+        for (i=1;i<n;i++) for (j=i+1;j<=n;j++) {
+          if (c[i]==0 || c[j]==0) continue
+          inter=0
+          for (k=1;k<=c[i];k++) if ((j SUBSEP T[i,k]) in S) inter++
+          union=c[i]+c[j]-inter
+          if (union>0 && inter*100/union >= th)
+            printf "- %s  <->  %s  (%d%% overlap)\n", path[i], path[j], inter*100/union
+        }
+      }' "$tsv")"
+    rm -f "$tsv"
+  else
+    dup_list="- skipped: ${pages} pages, scan starts at ${DUP_MIN_PAGES}\n"
+  fi
+
+  lessons_rows="$(awk '/^\|/ { if ($0 ~ /^\|[[:space:]]*---/) next; if ($0 ~ /^\|[[:space:]]*Rule/) next; c++ } END { print c+0 }' "$WIKI/LESSONS.md" 2>/dev/null || echo 0)"
+
+  {
+    printf '# Wiki housekeeping — %s\n\n' "$TODAY"
+    printf 'Thresholds: stale **%sd**, archive obsolete after **%sd**, LESSONS max **%s rows**, duplicate >= **%s%%** oneliner overlap (scan starts at %s pages).\n\n' \
+      "$STALE_DAYS" "$ARCHIVE_DAYS" "$LESSONS_MAX" "$DUP_JACCARD" "$DUP_MIN_PAGES"
+    printf 'Pages: %s | LESSONS rows: %s | mode: %s\n\n' "$pages" "$lessons_rows" "${apply:---report}"
+    printf '## Archive queue (moved now: %s)\n\n' "$archived"
+    [ -n "$archive_list" ] && printf '%b' "$archive_list" || printf -- '- none\n'
+    if [ -n "$collision_list" ]; then
+      printf '\n## Archive collisions (not moved)\n\n'
+      printf '%b' "$collision_list"
+    fi
+    if [ -n "$odo_list" ]; then
+      printf '\n## Obsolete without obsolete_since\n\n'
+      printf '%b' "$odo_list"
+    fi
+    printf '\n## Promote to LESSONS.md\n\n'
+    [ -n "$promote_list" ] && printf '%b' "$promote_list" || printf -- '- none\n'
+    printf '\n## Verify or mark obsolete (last_verified older than %sd)\n\n' "$STALE_DAYS"
+    [ -n "$verify_list" ] && printf '%b' "$verify_list" || printf -- '- none\n'
+    printf '\n## Duplicate candidates\n\n'
+    printf '%b' "$dup_list"
+    if [ "$lessons_rows" -gt "$LESSONS_MAX" ]; then
+      printf '\n## LESSONS.md too long\n\n- %s rows, max %s: promote to AGENTS.md or drop the dead ones\n' "$lessons_rows" "$LESSONS_MAX"
+    fi
+    printf '\n---\nNo page is deleted. `--apply` moves obsolete pages (age counted from `obsolete_since`) into `archive/`, and never overwrites an existing archived file. `reports/` keeps the newest %s.\n' "$REPORTS_KEEP"
+  } > "$report"
+
+  printf 'report: %s\n' "$report"
+  printf 'pages %s | archived %s | promote %s | stale %s | lessons rows %s/%s\n' \
+    "$pages" "$archived" "$(printf '%b' "$promote_list" | grep -c '^- ' || true)" \
+    "$(printf '%b' "$verify_list" | grep -c '^- ' || true)" "$lessons_rows" "$LESSONS_MAX"
+  return 0
+}
+
+
+cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
+  local target="${1:-$HOME/.agents/wiki}" assets="" f in_place=0
+  local script_dir
+  script_dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  # assets ship with the skill; fall back to the running wiki's own docs
+  if [ -d "$script_dir/../assets" ]; then
+    assets="$(cd -P "$script_dir/../assets" && pwd)"
+  elif [ -d "$WIKI/templates" ]; then
+    assets="$WIKI"
+  fi
+  [ -n "$assets" ] || die "no assets found next to the script"
+
+  # allow an in-place init when the target is this package (git clone -> init)
+  if [ -d "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+    if [ -f "$target/scripts/wiki" ] && [ -d "$target/assets" ]; then
+      in_place=1
+    else
+      die "target is not empty and is not this package: $target"
+    fi
+  fi
+  mkdir -p "$target/solutions" "$target/templates" "$target/reports" "$target/archive" "$target/bin"
+
+  # BSD cp -n exits 1 when it skips, which kills the script under set -e,
+  # so test existence explicitly instead
+  for f in README.md LESSONS.md; do
+    if [ -f "$assets/$f" ] && [ ! -e "$target/$f" ]; then cp "$assets/$f" "$target/$f"; fi
+  done
+  if [ -f "$assets/templates/entry.md" ] && [ ! -e "$target/templates/entry.md" ]; then
+    cp "$assets/templates/entry.md" "$target/templates/entry.md"
+  elif [ -f "$assets/entry.md" ] && [ ! -e "$target/templates/entry.md" ]; then
+    cp "$assets/entry.md" "$target/templates/entry.md"
+  fi
+  if [ -f "$assets/AGENTS-block.md" ] && [ ! -e "$target/AGENTS-snippet.md" ]; then
+    cp "$assets/AGENTS-block.md" "$target/AGENTS-snippet.md"
+  fi
+
+  cp "$_src" "$target/bin/wiki"
+  chmod +x "$target/bin/wiki"
+
+  WIKI_HOME="$target" "$target/bin/wiki" index >/dev/null || true
+
+  if [ "$in_place" = "1" ]; then
+    printf 'wiki:  %s (in place: existing package files left untouched)\n' "$target"
+  else
+    printf 'wiki:  %s\n' "$target"
+  fi
+  printf 'cmd:   %s/bin/wiki\n' "$target"
+  printf '\nnext:\n'
+  printf '  1. cp %s/bin/wiki ~/.local/bin/wiki   # or link it\n' "$target"
+  printf '  2. append %s/AGENTS-snippet.md to your agents instruction file\n' "$target"
+  printf '  3. %s/bin/wiki housekeep              # first report\n' "$target"
+  return 0
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "$@" ;;
+  find) shift; cmd_find "$@" ;;
+  list) cmd_list ;;
+  new) shift; cmd_new "$@" ;;
+  index) cmd_index ;;
+  lint) cmd_lint ;;
+  housekeep) shift; cmd_housekeep "$@" ;;
+  *) sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# //'; exit 1 ;;
+esac

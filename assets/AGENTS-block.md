@@ -1,0 +1,10 @@
+- global rules live here, in ~/.agents/AGENTS.md; read it before non-trivial work
+- bug/solution wiki at ~/.agents/wiki; first place to look, not the last
+    - before debugging: `wiki find "<exact error text>"`, or `rg -i -l "<error>" ~/.agents/wiki/solutions`
+    - read only the 1–2 matching pages; check `env:`, `status:` and `last_verified:` before applying
+    - a page that answered your search is evidence: bump its `recurrence:` and `last_seen:`; this is never gated on cost
+    - a new page is gated on cost: 30+ min on the fix, or 3+ failed attempts, or the error text did not explain the cause
+        - costly → `wiki new <domain> <slug>`; keep the failed attempts, not just the fix
+        - cheap (typo, wrong flag, error named the missing thing) → no page, and no bump
+    - one fact one place: 2nd occurrence → one line in `LESSONS.md`; 3rd → a rule here
+    - update an existing page instead of adding a duplicate
