@@ -28,7 +28,8 @@ symptom to match on and the failed attempts to avoid.
   templates/entry.md
   reports/<date>.md              daily housekeeping report
   archive/<domain>/              obsolete pages, out of circulation, still on disk
-  bin/wiki                       the helper
+  bin/wiki                       the helper (bash)
+  bin/wiki.ps1 / wiki.cmd        the helper (Windows)
 ```
 
 A page:
@@ -63,16 +64,30 @@ A command that shows output which changes. Printing a constant proves nothing.
 
 ## Install
 
+**macOS / Linux**
+
 ```sh
 git clone https://github.com/phillui-37/bugwiki ~/.agents/wiki
-~/.agents/wiki/scripts/wiki init        # or: bash scripts/wiki init, from a clone elsewhere
-cp ~/.agents/wiki/bin/wiki ~/.local/bin/wiki
+bash ~/.agents/wiki/scripts/wiki init ~/.agents/wiki
+ln -sf ~/.agents/wiki/bin/wiki ~/.local/bin/wiki   # or copy it
+```
+
+**Windows (PowerShell 5.1 or 7+)**
+
+```powershell
+git clone https://github.com/phillui-37/bugwiki $HOME\.agents\wiki
+powershell -NoProfile -ExecutionPolicy Bypass -File $HOME\.agents\wiki\scripts\wiki.ps1 init $HOME\.agents\wiki
+# then add $HOME\.agents\wiki\bin to your PATH — `wiki.cmd` is the shim, so `wiki find "..."` works
 ```
 
 Then append the block from `assets/AGENTS-block.md` to your agents instruction
 file (`~/.agents/AGENTS.md`, `AGENTS.md`, `CLAUDE.md` — whatever your host reads).
 That block is what makes the store live: search before debugging, write after a
 costly fix, bump when a page answers you.
+
+Same store on both platforms: the frontmatter, the reports, the archive rules and
+the exit codes match. Only the helper differs — `scripts/wiki` (bash) or
+`scripts/wiki.ps1` + `scripts/wiki.cmd` (Windows).
 
 Hosts that scan skill directories can install this repo directly as a skill —
 `SKILL.md` is at the root.
@@ -88,6 +103,10 @@ Hosts that scan skill directories can install this repo directly as a skill —
 | `wiki lint` | bad fields, stale pages, promotion candidates; exits 1 on errors |
 | `wiki housekeep [--apply]` | archive queue, promotions, duplicate pairs → `reports/<date>.md` |
 | `wiki init [target]` | scaffold a new store from the bundled assets |
+
+On Windows the same commands exist as `wiki.cmd` (calls `wiki.ps1` with `pwsh`
+when installed, `powershell` otherwise). `WIKI_REGEX=1` works there too —
+`$env:WIKI_REGEX=1`.
 
 ## Two gates
 
@@ -137,6 +156,10 @@ gate, the second-occurrence bar, and the `recurrence:` counter.
 
 ## Design notes
 
+- **Two helpers, one contract.** `scripts/wiki` (bash) and `scripts/wiki.ps1`
+  produce the same output, exit codes and report layout, so an agent on either
+  platform reads the same store. The PowerShell port uses `rg` when it exists and
+  falls back to `Select-String`, because Windows machines often lack ripgrep.
 - **bash + ripgrep.** Retrieval is `rg -F` over a few dozen files. At 3 pages this
   is enough; at 500 it is still fast, and the failure mode (a paraphrase the
   keywords miss) is visible in the search output rather than hidden in a ranking.

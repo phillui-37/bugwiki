@@ -15,9 +15,18 @@ no daemon. `rg` does the retrieval.
 ## Quick start (new machine)
 
 ```sh
-# from this skill directory
-bash scripts/wiki init                 # scaffolds ~/.agents/wiki (refuses if not empty)
+# macOS / Linux, from this skill directory
+bash scripts/wiki init                 # scaffolds ~/.agents/wiki
 cp ~/.agents/wiki/bin/wiki ~/.local/bin/wiki   # or: ln -s ~/.agents/wiki/bin/wiki ~/.local/bin/wiki
+```
+
+```powershell
+# Windows
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\wiki.ps1 init $HOME\.agents\wiki
+# add $HOME\.agents\wiki\bin to PATH; `wiki` then resolves to wiki.cmd
+```
+
+```sh
 cat ~/.agents/wiki/AGENTS-snippet.md   # append this block to your agents instruction file
 ```
 
@@ -64,7 +73,9 @@ gets no page — noise makes search worthless.
 
 ```text
 SKILL.md              this file
-scripts/wiki          the helper: init / find / new / index / lint / housekeep / list
+scripts/wiki          the helper (bash): init / find / new / index / lint / housekeep / list
+scripts/wiki.ps1      the same helper in PowerShell 5.1+ (rg, else Select-String)
+scripts/wiki.cmd      Windows shim, so `wiki find "..."` works from cmd
 assets/README.md      the store's router and write protocol (copied into the store)
 assets/LESSONS.md     the promoted-rules file, empty with its format
 assets/templates/entry.md   page template with every field explained
