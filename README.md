@@ -70,7 +70,7 @@ A command that shows output which changes. Printing a constant proves nothing.
 ```sh
 git clone https://github.com/phillui-37/bugwiki ~/.agents/wiki
 bash ~/.agents/wiki/scripts/wiki init ~/.agents/wiki
-ln -sf ~/poc/agent-wiki/bin/wiki ~/.local/bin/wiki
+ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
 ```
 
 **Windows (PowerShell 5.1 or 7+)**

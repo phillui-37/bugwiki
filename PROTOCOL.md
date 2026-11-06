@@ -1,7 +1,7 @@
 # PROTOCOL.md — 記憶庫協議 v1
 
 對象：`~/.agents/wiki` 內容根（現有 9 頁 solution、LESSONS.md、README index）
-程式：`~/poc/agent-wiki`（`bin/wiki`）
+程式：`~/.config/alma/skills/bugwiki`（`bin/wiki`）
 狀態：**schema 已實作並通過 `verify --migration`（9 頁零改動）**。內容根未安裝：要先 `git init` 才有可逆性。
 
 ---

@@ -129,7 +129,7 @@ hands, one owner — otherwise the queue is nobody's.
 ## Install
 
 ```bash
-ln -sf <pkg>/bin/wiki ~/.local/bin/wiki
+ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
 wiki init                      # seed ~/.agents/wiki (or WIKI_HOME=<dir>)
 cd "$WIKI_HOME" && git init    # required before the first dream commit
 wiki verify --migration        # must pass before the schema is trusted

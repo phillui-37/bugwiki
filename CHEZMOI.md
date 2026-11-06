@@ -19,32 +19,34 @@ other along.
   `encryption = "age"` with identity `~/.config/alma/ai-env-age-key.txt`.
 - `chezmoi managed` returns **0 files** and `chezmoi source-path` points at
   `~/.local/share/chezmoi`, which is empty.
-- Chat `mw1shbu6jrf0s1zm69n` describes a populated source at
-  `--source ~/Syncthing/ai-env` (age-encrypted `mcp.json`, platform-split
-  templates, `scripts/sync-magpie-routing-groups.cjs`). **That directory does not
-  exist on this machine right now** (`ls ~/Syncthing` → no such directory).
+- The populated source is the GitHub repo `phillui-37/ai-env` (private, 589 files,
+  `.chezmoi.toml.tmpl`, `.chezmoiignore`, `dot_config/alma/skills/bugwiki/`, age-encrypted
+  `mcp.json`), last pushed 2026-11-05. **It has never been cloned to this machine**:
+  `~/Syncthing/ai-env` does not exist. So the source lives remotely only; restoring
+  it is `git clone` plus `sourceDir` in `~/.config/chezmoi/chezmoi.toml`.
+- `dot_agents/AGENTS.md` is managed there. A local edit to `~/.agents/AGENTS.md` is
+  drift: it survives until someone runs `chezmoi apply`, then it is overwritten.
+  Put rule changes in the source repo, not only in the live file.
 
 So chezmoi is configured but currently syncing nothing. Nothing here depends on
 it being enabled; the layout above is what makes enabling it a one-line add
 instead of a refactor.
 
-## Enabling it (code only)
+## Enabling it
 
-```bash
-chezmoi --source ~/Syncthing/ai-env add ~/poc/agent-wiki
-```
-
-Then keep content out of the source tree. Because the two roots never overlap,
-no `.chezmoiignore` entry is needed for a default `WIKI_HOME`. If a machine sets
-`WIKI_HOME` inside the synced tree, ignore it explicitly:
+This package **is** the skill directory, and that directory is already managed by
+the `ai-env` chezmoi source (`dot_agents/...` and `dot_config/...` entries), so
+there is nothing to add — a `chezmoi apply` on another machine places it. Content
+stays out because the two roots never overlap; a machine that points `WIKI_HOME`
+into a synced tree must ignore it explicitly:
 
 ```
 # .chezmoiignore
-/poc/agent-wiki/.raw
-/poc/agent-wiki/facts
-/poc/agent-wiki/solutions
-/poc/agent-wiki/reports
-/poc/agent-wiki/.git
+/dot_config/alma/skills/bugwiki/.raw
+/dot_config/alma/skills/bugwiki/facts
+/dot_config/alma/skills/bugwiki/solutions
+/dot_config/alma/skills/bugwiki/reports
+/dot_config/alma/skills/bugwiki/.git
 ```
 
 ## Things this package must keep true
@@ -59,7 +61,7 @@ no `.chezmoiignore` entry is needed for a default `WIKI_HOME`. If a machine sets
 ## Per-machine setup after `chezmoi apply`
 
 ```bash
-ln -sf ~/poc/agent-wiki/bin/wiki ~/.local/bin/wiki
+ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
 [ -d ~/.agents/wiki ] || wiki init
 cd ~/.agents/wiki && git init      # required: dream writes must be revertable
 wiki verify --migration

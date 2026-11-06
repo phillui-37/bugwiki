@@ -3,7 +3,7 @@
 The only block that should mention the wiki. Replace the older "bug/solution wiki" block with this one; keep the total under a dozen lines, because this file is read every turn.
 
 ```md
-- memory wiki at ~/.agents/wiki (CLI: ~/poc/agent-wiki/bin/wiki); first place to look, not the last. One graph, two kinds: `solutions/` costly bugs, `facts/` things now true
+- memory wiki at ~/.agents/wiki (CLI: ~/.config/alma/skills/bugwiki/scripts/wiki); first place to look, not the last. One graph, two kinds: `solutions/` costly bugs, `facts/` things now true
     - before acting on remembered state: `wiki find "<exact term>"`, open at most 2 nodes, follow `supersedes` to the chain tail; `obsolete`/`conflict`/expired means "I don't know", never an answer
     - before debugging: same search (do not grep the tree by hand); check `env:`/`status:`/`last_verified:` before applying
     - a page that answered a search is evidence: bump `recurrence:` and `last_seen:`, never gated on cost
