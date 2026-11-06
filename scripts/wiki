@@ -587,8 +587,13 @@ cmd_dream() {
   shift 2>/dev/null || true
   case "$sub" in
     export)
-      [ -x "$PKG/bin/dream-export.py" ] || die "missing $PKG/bin/dream-export.py"
-      "$PKG/bin/dream-export.py" --content-root "$WIKI" "$@" ;;
+      # resolve next to the running script: this CLI lives in bin/ in a dev
+      # checkout and in scripts/ once installed as a skill, and hardcoding
+      # either path is how a nightly run dies at 01:00 with nothing written
+      local helper
+      helper="$(cd -P "$(dirname "$_src")" && pwd)/dream-export.py"
+      [ -x "$helper" ] || die "missing $helper"
+      "$helper" --content-root "$WIKI" "$@" ;;
     status)
       local state="$WIKI/.dream/last-run"
       printf 'content root: %s\n' "$WIKI"

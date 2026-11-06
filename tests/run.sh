@@ -215,7 +215,23 @@ case "$(bash "$WIKI_BIN" find zzz-unique-token)" in
 esac
 expect_rc "a fact may link into solutions/" 0 bash "$WIKI_BIN" verify
 
-echo "11. nothing is written outside the content root"
+echo "11. dream export finds its helper and survives an empty thread list"
+seed "$TMP/k"; export WIKI_HOME="$TMP/k"
+mkdir -p "$TMP/kbin"
+cat > "$TMP/kbin/alma" <<'STUB'
+#!/usr/bin/env bash
+# stand-in for `alma threads --json`; proves the export path offline
+printf '[]\n'
+STUB
+chmod +x "$TMP/kbin/alma"
+out="$(PATH="$TMP/kbin:$PATH" bash "$WIKI_BIN" dream export 2>&1)"
+case "$out" in
+  *"threads: 0"*) ok "export resolves dream-export.py next to the script" ;;
+  *) bad "export resolves dream-export.py next to the script" "$out" ;;
+esac
+[ -f "$TMP/k/.dream/last-run" ] && ok "export records the run window" || bad "export records the run window"
+
+echo "12. nothing is written outside the content root"
 seed "$TMP/i"; export WIKI_HOME="$TMP/i"
 before="$(find "$PKG" -newer "$PKG/scripts/wiki" -not -path "*/.git/*" -type f 2>/dev/null | wc -l | tr -d ' ')"
 bash "$WIKI_BIN" index >/dev/null; bash "$WIKI_BIN" verify >/dev/null 2>&1
