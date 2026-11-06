@@ -132,16 +132,16 @@ def main() -> int:
     state_path = os.path.join(state_dir, "last-run")
     today = dt.date.today()
 
-    # Window: keep 6 hours of overlap so a thread touched just before the last
-    # run still gets picked up, but do not re-do whole days (a date-based
-    # "minus one day" re-exports two days every night).
+    # Window: start at the last successful run minus a short overlap. Not a
+    # date-based "minus one day" (that re-exports two days every night), and not
+    # hours of overlap (that re-reads everything a manual run already covered).
     since_dt = None
     if args.since:
         since_dt = parse_stamp(args.since)
     elif os.path.exists(state_path):
         since_dt = parse_stamp(open(state_path).read())
         if since_dt:
-            since_dt -= dt.timedelta(hours=6)  # overlap, so a late run cannot skip a thread
+            since_dt -= dt.timedelta(minutes=30)  # overlap for a thread still being written; runs take minutes
     if since_dt is None:
         since_dt = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
     since = since_dt.astimezone().date()
