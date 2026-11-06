@@ -142,6 +142,24 @@ last_seen: 2026-11-06
 EOF
 expect_rc "a solution status on a fact is rejected" 1 bash "$WIKI_BIN" verify
 
+echo "5b. a fact with no body fails lint"
+seed "$TMP/e2"; export WIKI_HOME="$TMP/e2"
+cat > "$TMP/e2/facts/stub.md" <<'EOF'
+---
+slug: stub
+title: a stub
+kind: fact
+status: open
+recorded_at: 2026-11-06
+verified_at: 2026-11-06
+recurrence: 1
+last_seen: 2026-11-06
+---
+
+# stub
+EOF
+expect_rc "an empty fact body is rejected" 1 bash "$WIKI_BIN" lint
+
 echo "6. staleness is per kind"
 seed "$TMP/f"; export WIKI_HOME="$TMP/f"
 cat > "$TMP/f/facts/expired.md" <<'EOF'

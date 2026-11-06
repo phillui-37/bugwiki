@@ -410,6 +410,18 @@ cmd_lint() {
     elif ! status_ok "$(node_kind "$f")" "$status"; then
       printf 'bad status for %s (%s): %s\n' "$(node_kind "$f")" "$status" "${f#$WIKI/}"; bad=1
     fi
+    # a fact with no body is a stub that passed the gate because it has
+    # frontmatter; the body is where the evidence lives
+    if [ "$(node_kind "$f")" = fact ]; then
+      local body
+      body="$(awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n>=2' "$f" | tr -d '[:space:]' | wc -c | tr -d ' ')"
+      if [ "$body" -lt 200 ]; then
+        printf 'thin fact body (%s chars < 200): %s\n' "$body" "${f#$WIKI/}"; bad=1
+      fi
+      if [ "$(field "$f" title)" = "$(field "$f" oneliner)" ]; then
+        printf 'advisory: title repeats oneliner: %s\n' "${f#$WIKI/}"
+      fi
+    fi
     # every edge must resolve: a graph with dead ends is worse than no graph
     local key refs t
     for key in supersedes contradicts related; do
