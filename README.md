@@ -70,7 +70,7 @@ A command that shows output which changes. Printing a constant proves nothing.
 ```sh
 git clone https://github.com/phillui-37/bugwiki ~/.agents/wiki
 bash ~/.agents/wiki/scripts/wiki init ~/.agents/wiki
-ln -sf ~/.agents/wiki/bin/wiki ~/.local/bin/wiki   # or copy it
+ln -sf ~/poc/agent-wiki/bin/wiki ~/.local/bin/wiki
 ```
 
 **Windows (PowerShell 5.1 or 7+)**
@@ -180,3 +180,25 @@ gate, the second-occurrence bar, and the `recurrence:` counter.
 ## License
 
 MIT.
+
+## Facts, edges and the dream
+
+The wiki holds two kinds of node in one namespace: `solutions/<domain>/<slug>.md`
+(a bug that cost real time) and `facts/<slug>.md` (something now true, with a
+`source:`). `kind` is derived from the path, so pages written before the schema
+need no edit.
+
+```bash
+wiki show <slug>        # kind, validity, inbound edges, supersession chain
+wiki stale              # expired, or past the per-kind limit
+wiki verify             # schema, dates, every edge resolves
+wiki dream export       # Alma threads -> .raw/<date>/*.txt (compact)
+wiki dream commit       # one git commit + one line in reports/<date>.dream.md
+```
+
+A changed fact is never deleted: the old node gets `valid_to` + `status:
+obsolete`, the new one gets `supersedes: [old-slug]`. `PROTOCOL.md` has the
+thresholds and the handler model; `CHEZMOI.md` has the sync split (code syncs,
+content does not).
+
+`tests/run.sh` is the offline regression suite (21 checks, no network).

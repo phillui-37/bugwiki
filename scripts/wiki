@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# wiki — tiny helper for the agent bug/solution wiki.
-# Usage: wiki init [target] | wiki find <terms> | wiki new <domain> <slug>
-#        wiki index | wiki lint | wiki housekeep [--apply] | wiki list
+# wiki — tiny helper for the agent memory wiki (solutions + facts, typed edges).
+# Usage: wiki init [target] | wiki find <terms> | wiki show <slug> | wiki new <domain> <slug>
+#        wiki index | wiki lint | wiki verify [--migration] | wiki stale
+#        wiki housekeep [--apply] | wiki list | wiki dream <export|commit|status>
 set -euo pipefail
 
 # resolve symlinks, so ~/.local/bin/wiki works
@@ -11,7 +12,11 @@ while [ -L "$_src" ]; do
   _src="$(readlink "$_src")"
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
-WIKI="${WIKI_HOME:-$(cd -P "$(dirname "$_src")/.." && pwd)}"
+# Two roots, on purpose.
+#   PKG  — code + assets. Safe to sync across machines (chezmoi / git).
+#   WIKI — content (solutions, facts, .raw, reports). Machine-local, never synced.
+PKG="$(cd -P "$(dirname "$_src")/.." && pwd)"
+WIKI="${WIKI_HOME:-$HOME/.agents/wiki}"
 TODAY="$(date +%Y-%m-%d)"
 
 # Housekeeping thresholds. Override any of them with the env var on the right.
@@ -21,6 +26,8 @@ LESSONS_MAX="${WIKI_LESSONS_MAX:-12}"     # max table rows in LESSONS.md before 
 DUP_JACCARD="${WIKI_DUP_JACCARD:-55}"     # oneliner token overlap percent that counts as a duplicate
 DUP_MIN_PAGES="${WIKI_DUP_MIN_PAGES:-8}"  # do not run the duplicate scan below this page count
 REPORTS_KEEP="${WIKI_REPORTS_KEEP:-30}"   # keep the newest N daily reports
+STALE_FACT_DAYS="${WIKI_FACT_STALE_DAYS:-90}"      # stable fact: re-verify after N days (advisory)
+STALE_PROMOTED_DAYS="${WIKI_PROMOTED_STALE_DAYS:-90}"  # a promoted rule that stops being true: demote it
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
@@ -40,12 +47,75 @@ field() { # field <file> <key>
   ' "$1"
 }
 
+# --- schema helpers -------------------------------------------------------
+
+# field_list <file> <key> — inline list `[a, b]` as one entry per line.
+# Only the inline form is supported: field() is line-oriented and a block list
+# (`  - a` per line) cannot be read back reliably.
+field_list() {
+  local v
+  v="$(field "$1" "$2")"
+  v="${v#[}"; v="${v%]}"
+  printf '%s\n' "$v" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
+}
+
+# node_kind <file> — explicit kind, else derived from the path so that every
+# page written before the schema existed reads correctly with no edit.
+node_kind() {
+  local k
+  k="$(field "$1" kind)"
+  if [ -n "$k" ]; then printf '%s' "$k"; return 0; fi
+  case "${1#$WIKI/}" in
+    solutions/*) printf 'solution' ;;
+    facts/*)     printf 'fact' ;;
+    .raw/*)      printf 'raw' ;;
+    *)           printf 'solution' ;;
+  esac
+}
+
+status_ok() { # status_ok <kind> <status>
+  case "$1" in
+    fact)     case "$2" in verified|open|obsolete|conflict) return 0 ;; esac ;;
+    solution) case "$2" in verified|workaround|unconfirmed|active|obsolete|conflict) return 0 ;; esac ;;
+    *)        return 0 ;;
+  esac
+  return 1
+}
+
+# node_paths <ref> [<from-file>] — resolve an edge target to real files.
+# Accepts a relative path (resolved against <from-file>'s directory, which is
+# what every page written before the schema uses) or a bare slug stem.
+node_paths() {
+  local ref="$1" from="${2:-}" cand dir
+  case "$ref" in
+    "") return 0 ;;
+    /*) [ -f "$ref" ] && printf '%s\n' "$ref"; return 0 ;;
+  esac
+  if [ -n "$from" ]; then
+    dir="$(dirname "$from")"
+    cand="$dir/$ref"
+    [ -f "$cand" ] && { (cd -P "$(dirname "$cand")" && printf '%s/%s\n' "$PWD" "$(basename "$cand")"); return 0; }
+  fi
+  [ -f "$WIKI/$ref" ] && { printf '%s\n' "$WIKI/$ref"; return 0; }
+  find "$WIKI/solutions" "$WIKI/facts" -type f -name "$(basename "$ref").md" 2>/dev/null | sort
+  return 0
+}
+
+node_label() { printf '%s' "$(basename "${1%.md}")"; }
+
+search_roots() {
+  local r
+  for r in "$WIKI/solutions" "$WIKI/facts"; do [ -d "$r" ] && printf '%s\n' "$r"; done
+}
+
 cmd_find() {
   [ $# -gt 0 ] || die "usage: wiki find <terms>"
-  local q="$*" hits one ono st fixed
+  local q="$*" hits one ono st fixed roots
+  roots="$(search_roots)"
   # literal search by default: a query like "[" must be text, not a broken regex
   if [ "${WIKI_REGEX:-0}" = "1" ]; then fixed=""; else fixed="-F"; fi
-  hits="$(rg -il ${fixed:-} --glob '*.md' -- "$q" "$WIKI/solutions" 2>/dev/null)"
+  # shellcheck disable=SC2086
+  hits="$(rg -il ${fixed:-} --glob '*.md' -- "$q" $roots 2>/dev/null)"
   st=$?
   if [ "$st" -gt 1 ]; then
     printf 'search error (rg exit %s) for: %s\n' "$st" "$q" >&2
@@ -56,7 +126,7 @@ cmd_find() {
   case "$q" in
     *" "*) ;;
     *) hits="$hits
-$(find "$WIKI/solutions" -type f -iname "*$q*.md" 2>/dev/null)" ;;
+$(find $roots -type f -iname "*$q*.md" 2>/dev/null)" ;;
   esac
   hits="$(printf '%s\n' "$hits" | sed '/^$/d' | sort -u)"
   if [ -z "$hits" ]; then
@@ -66,7 +136,7 @@ $(find "$WIKI/solutions" -type f -iname "*$q*.md" 2>/dev/null)" ;;
   fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    printf '%s\n' "--- ${f#$WIKI/}  [$(field "$f" status), recurrence $(field "$f" recurrence)]"
+    printf '%s\n' "--- ${f#$WIKI/}  [$(node_kind "$f") · $(field "$f" status), recurrence $(field "$f" recurrence)]"
     one="$(field "$f" oneliner)"
     if [ -n "$one" ]; then printf '    = %s\n' "$one"; fi
     # the oneliner is already printed above; do not echo it twice
@@ -80,14 +150,32 @@ $(find "$WIKI/solutions" -type f -iname "*$q*.md" 2>/dev/null)" ;;
 
 cmd_list() {
   local f
+  # both kinds: a fact must be as discoverable as a solution
   while IFS= read -r f; do
-    printf '%s\n' "${f#$WIKI/solutions/}" | sed 's/\.md$//'
-  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+    case "${f#$WIKI/}" in
+      solutions/*) printf '%s\n' "${f#$WIKI/solutions/}" | sed 's/\.md$//' ;;
+      facts/*)     printf 'fact:%s\n' "$(basename "${f%.md}")" ;;
+    esac
+  done < <(all_pages)
 }
 
 cmd_new() {
-  [ $# -eq 2 ] || die "usage: wiki new <domain> <slug>"
+  [ $# -eq 2 ] || die "usage: wiki new <domain> <slug>  |  wiki new fact <slug>"
   local domain="$1" slug="$2" dir="$WIKI/solutions/$1" file title
+  if [ "$domain" = fact ]; then
+    dir="$WIKI/facts"
+    file="$dir/$slug.md"
+    [ -e "$file" ] && die "exists: $file"
+    mkdir -p "$dir"
+    sed -e "s|^slug:.*|slug: $slug|" \
+        -e "s|^valid_from:.*|valid_from: $TODAY|" \
+        -e "s|^recorded_at:.*|recorded_at: $TODAY|" \
+        -e "s|^verified_at:.*|verified_at: $TODAY|" \
+        -e "s|^last_seen:.*|last_seen: $TODAY|" \
+        "$PKG/assets/templates/fact.md" > "$file"
+    printf '%s\n' "$file"
+    return 0
+  fi
   file="$dir/$slug.md"
   [ -e "$file" ] && die "exists: $file"
   mkdir -p "$dir"
@@ -104,9 +192,15 @@ cmd_new() {
 }
 
 cmd_index() {
-  local readme="$WIKI/README.md" tmp rf f
+  local readme tmp rf f header
+  # A repo clone keeps README.md as documentation and puts the index in INDEX.md.
+  # Detected structurally, not by an env var, so both layouts need no setup.
+  readme="$WIKI/README.md"; header="# $(basename "$WIKI")"
+  if [ -f "$WIKI/SKILL.md" ] && [ -d "$WIKI/scripts" ]; then
+    readme="$WIKI/INDEX.md"; header="# Index"
+  fi
   if [ ! -f "$readme" ]; then
-    printf '# %s\n' "$(basename "$WIKI")" > "$readme"
+    printf '%s\n' "$header" > "$readme"
   fi
   if ! rg -q '<!-- index:start -->' "$readme" 2>/dev/null; then
     # a repo clone keeps its README as documentation; the index is data
@@ -122,7 +216,7 @@ cmd_index() {
     printf '| [%s](%s) | %s | %s | %s |\n' \
       "$(field "$f" title)" "${f#$WIKI/}" "$(basename "$(dirname "$f")")" \
       "$(field "$f" status)" "$(field "$f" last_seen)" >> "$rf"
-  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+  done < <(all_pages)
 
   tmp="$(mktemp)"
   awk -v rf="$rf" '
@@ -142,32 +236,207 @@ cmd_index() {
   rm -f "$rf"
 }
 
+# all_pages — every content page, deterministic order.
+all_pages() {
+  find "$WIKI/solutions" "$WIKI/facts" -type f -name '*.md' ! -name 'README.md' 2>/dev/null | sort
+}
+
+cmd_show() {
+  [ $# -eq 1 ] || die "usage: wiki show <slug|relative-path>"
+  local ref="$1" matches f kind st mat one vf vt va ex rec
+  matches="$(node_paths "$ref")"
+  [ -n "$matches" ] || { printf 'not found: %s\n' "$ref"; return 1; }
+  if [ "$(printf '%s\n' "$matches" | wc -l | tr -d ' ')" -gt 1 ]; then
+    printf 'ambiguous (%s matches), use a path:\n' "$(printf '%s\n' "$matches" | wc -l | tr -d ' ')"
+    printf '  %s\n' ${matches#$WIKI/}
+    return 2
+  fi
+  f="$matches"
+  kind="$(node_kind "$f")"; st="$(field "$f" status)"; mat="$(field "$f" maturity)"
+  one="$(field "$f" oneliner)"; [ -n "$one" ] || one="$(field "$f" title)"
+  vf="$(field "$f" valid_from)"; vt="$(field "$f" valid_to)"
+  va="$(field "$f" verified_at)"; [ -n "$va" ] || va="$(field "$f" last_verified)"
+  ex="$(field "$f" expires)"; rec="$(field "$f" recurrence)"
+
+  printf '%s  [%s%s  %s]\n' "$(node_label "$f")" "$kind" "${mat:+ · $mat}" "${st:-NO-STATUS}"
+  [ -n "$one" ] && printf '  = %s\n' "$one"
+  if [ -n "$vf" ] || [ -n "$vt" ]; then
+    printf '  valid %s -> %s\n' "${vf:-?}" "${vt:-now}"
+  fi
+  [ -n "$va" ] && printf '  verified %s' "$va"
+  [ -n "$ex" ] && [ "$ex" != null ] && printf '   expires %s' "$ex"
+  [ -n "$rec" ] && printf '   recurrence %s' "$rec"
+  printf '\n'
+
+  local key refs t
+  for key in supersedes contradicts related; do
+    refs="$(field_list "$f" "$key")"
+    [ -n "$refs" ] || continue
+    printf '  %s:\n' "$key"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      printf '    -> %s\n' "$t"
+    done <<< "$refs"
+  done
+
+  # inbound edges: who claims this node. This is the line that stops an obsolete
+  # node being read as current, so it is printed even when empty.
+  local other from
+  other=""
+  while IFS= read -r from; do
+    [ -n "$from" ] || continue
+    [ "$from" = "$f" ] && continue
+    if grep -q -- "$(node_label "$f")" <(field_list "$from" supersedes; field_list "$from" contradicts) 2>/dev/null; then
+      other="$other$from\n"
+    fi
+  done < <(all_pages)
+  if [ -n "$other" ]; then
+    printf '  superseded/contradicted by:\n'
+    while IFS= read -r t; do [ -n "$t" ] && printf '    <- %s\n' "$(node_label "$t")"; done <<< "$(printf '%b' "$other")"
+  fi
+
+  # follow the supersession chain to its tail: 1 hop is not enough
+  local cur hops nxt found
+  cur="$f"; hops=0
+  while [ "$hops" -lt 10 ]; do
+    nxt=""
+    while IFS= read -r from; do
+      [ -n "$from" ] || continue
+      case "$(field_list "$from" supersedes)" in
+        *"$(node_label "$cur")"*) nxt="$from"; break ;;
+      esac
+    done < <(all_pages)
+    [ -n "$nxt" ] || break
+    cur="$nxt"; hops=$((hops + 1))
+    printf '  -> chain %s: %s [%s]\n' "$hops" "$(node_label "$cur")" "$(field "$cur" status)"
+  done
+  [ "$hops" -eq 0 ] || printf '  (current endpoint: %s)\n' "$(node_label "$cur")"
+  return 0
+}
+
+cmd_stale() {
+  local f kind st exp seen epoch now age n=0
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    st="$(field "$f" status)"
+    [ "$st" = obsolete ] && continue
+    [ "$st" = conflict ] && { printf 'conflict  %s\n' "${f#$WIKI/}"; n=$((n + 1)); continue; }
+    kind="$(node_kind "$f")"
+    exp="$(field "$f" expires)"
+    if [ -n "$exp" ] && [ "$exp" != null ]; then
+      epoch="$(date -j -f %Y-%m-%d "$exp" +%s 2>/dev/null || echo 0)"
+      if [ "$epoch" -gt 0 ] && [ "$now" -ge "$epoch" ]; then
+        printf 'expired   %s  [%s, expires %s]\n' "${f#$WIKI/}" "$kind" "$exp"; n=$((n + 1)); continue
+      fi
+    fi
+    seen="$(field "$f" verified_at)"
+    [ -n "$seen" ] || seen="$(field "$f" last_verified)"
+    [ -n "$seen" ] || seen="$(field "$f" last_seen)"
+    [ -n "$seen" ] || continue
+    epoch="$(date -j -f %Y-%m-%d "$seen" +%s 2>/dev/null || echo 0)"
+    [ "$epoch" -gt 0 ] || continue
+    age=$(( (now - epoch) / 86400 ))
+    local limit="$STALE_DAYS"
+    case "$kind" in
+      fact) [ "$(field "$f" maturity)" = promoted ] && limit="$STALE_PROMOTED_DAYS" || limit="$STALE_FACT_DAYS" ;;
+    esac
+    if [ "$age" -ge "$limit" ]; then
+      printf 'stale     %s  [%s, %sd > %sd]\n' "${f#$WIKI/}" "$kind" "$age" "$limit"; n=$((n + 1))
+    fi
+  done < <(all_pages)
+  [ "$n" -eq 0 ] && printf 'nothing stale\n'
+  return 0
+}
+
+cmd_verify() {
+  local mode="${1:-}" f kind st d refs t bad=0 n=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    n=$((n + 1))
+    if [ "$(head -1 "$f")" != "---" ]; then
+      printf 'err  no frontmatter: %s\n' "${f#$WIKI/}"; bad=1; continue
+    fi
+    if [ "$(grep -c '^---[[:space:]]*$' "$f")" -lt 2 ]; then
+      printf 'err  unterminated frontmatter: %s\n' "${f#$WIKI/}"; bad=1; continue
+    fi
+    kind="$(node_kind "$f")"
+    st="$(field "$f" status)"
+    if [ -n "$st" ] && ! status_ok "$kind" "$st"; then
+      printf 'err  bad status for %s (%s): %s\n' "$kind" "$st" "${f#$WIKI/}"; bad=1
+    fi
+    for d in valid_from valid_to recorded_at verified_at expires first_seen last_seen obsolete_since; do
+      local v
+      v="$(field "$f" "$d")"
+      case "$v" in
+        ""|null) ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) date -j -f %Y-%m-%d "$v" +%s >/dev/null 2>&1 || { printf 'err  bad date %s=%s: %s\n' "$d" "$v" "${f#$WIKI/}"; bad=1; } ;;
+        *) printf 'err  date not YYYY-MM-DD %s=%s: %s\n' "$d" "$v" "${f#$WIKI/}"; bad=1 ;;
+      esac
+    done
+    # every edge must resolve, or the graph has a dead end
+    for key in supersedes contradicts related; do
+      refs="$(field_list "$f" "$key")"
+      [ -n "$refs" ] || continue
+      while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        if [ -z "$(node_paths "$t" "$f")" ]; then
+          printf 'err  %s edge does not resolve (%s): %s\n' "$key" "$t" "${f#$WIKI/}"; bad=1
+        fi
+      done <<< "$refs"
+    done
+  done < <(all_pages)
+  if [ "$bad" -eq 0 ]; then
+    printf 'verify ok: %s pages (%s)\n' "$n" "${mode:-schema}"
+    return 0
+  fi
+  printf 'verify FAILED\n'
+  return 1
+}
+
 cmd_lint() {
   local bad=0 adv=0 f status seen title epoch now rec
   now="$(date +%s)"
   while IFS= read -r f; do
     title="$(field "$f" title)"
+    [ -n "$title" ] || title="$(field "$f" slug)"
     status="$(field "$f" status)"
     seen="$(field "$f" last_verified)"
     [ -n "$seen" ] || seen="$(field "$f" last_seen)"
     rec="$(field "$f" recurrence)"
     if [ -z "$title" ]; then printf 'missing title: %s\n' "${f#$WIKI/}"; bad=1; fi
-    case "$status" in
-      verified|workaround|obsolete|unconfirmed) ;;
-      "") printf 'missing status: %s\n' "${f#$WIKI/}"; bad=1 ;;
-      *) printf 'bad status (%s): %s\n' "$status" "${f#$WIKI/}"; bad=1 ;;
-    esac
+    if [ -z "$status" ]; then
+      printf 'missing status: %s\n' "${f#$WIKI/}"; bad=1
+    elif ! status_ok "$(node_kind "$f")" "$status"; then
+      printf 'bad status for %s (%s): %s\n' "$(node_kind "$f")" "$status" "${f#$WIKI/}"; bad=1
+    fi
+    # every edge must resolve: a graph with dead ends is worse than no graph
+    local key refs t
+    for key in supersedes contradicts related; do
+      refs="$(field_list "$f" "$key")"
+      [ -n "$refs" ] || continue
+      while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        if [ -z "$(node_paths "$t" "$f")" ]; then
+          printf 'dead %s edge (%s): %s\n' "$key" "$t" "${f#$WIKI/}"; bad=1
+        fi
+      done <<< "$refs"
+    done
     case "$rec" in
       "") printf 'missing recurrence: %s\n' "${f#$WIKI/}"; bad=1 ;;
       *[!0-9]*) printf 'bad recurrence (%s): %s\n' "$rec" "${f#$WIKI/}"; bad=1 ;;
       *) if [ "$rec" -ge 2 ]; then printf 'promote to LESSONS.md (%s days): %s\n' "$rec" "${f#$WIKI/}"; adv=1; fi ;;
     esac
+    local limit="$STALE_DAYS"
+    case "$(node_kind "$f")" in
+      fact) if [ "$(field "$f" maturity)" = promoted ]; then limit="$STALE_PROMOTED_DAYS"; else limit="$STALE_FACT_DAYS"; fi ;;
+    esac
     if [ -n "$seen" ] && epoch="$(date -j -f %Y-%m-%d "$seen" +%s 2>/dev/null)"; then
-      if [ $(( (now - epoch) / 86400 )) -ge "$STALE_DAYS" ] && [ "$status" != obsolete ]; then
-        printf 'stale (%s days, %s): %s\n' "$(( (now - epoch) / 86400 ))" "$status" "${f#$WIKI/}"
+      if [ $(( (now - epoch) / 86400 )) -ge "$limit" ] && [ "$status" != obsolete ]; then
+        printf 'stale (%s days > %s, %s): %s\n' "$(( (now - epoch) / 86400 ))" "$limit" "$status" "${f#$WIKI/}"
       fi
     fi
-  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+  done < <(all_pages)
   if [ "$bad" -eq 0 ] && [ "$adv" -eq 0 ]; then printf 'lint clean\n'; fi
   [ "$bad" -eq 0 ] || return 1
   return 0
@@ -308,6 +577,55 @@ cmd_housekeep() {
 }
 
 
+# --- dream ---------------------------------------------------------------
+# The dream is a means, not a store: it produces fact pages in the same wiki.
+# The analysis itself is an agent step (SKILL.md); these commands only do the
+# parts an agent is bad at -- fetching every page, and committing atomically.
+
+cmd_dream() {
+  local sub="${1:-status}"
+  shift 2>/dev/null || true
+  case "$sub" in
+    export)
+      [ -x "$PKG/bin/dream-export.py" ] || die "missing $PKG/bin/dream-export.py"
+      "$PKG/bin/dream-export.py" --content-root "$WIKI" "$@" ;;
+    status)
+      local state="$WIKI/.dream/last-run"
+      printf 'content root: %s\n' "$WIKI"
+      printf 'last run:     %s\n' "$([ -f "$state" ] && cat "$state" || echo "never")"
+      printf 'raw dirs:     %s\n' "$(find "$WIKI/.raw" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'facts:        %s\n' "$(find "$WIKI/facts" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+      if [ -d "$WIKI/.git" ]; then
+        printf 'git:          %s uncommitted change(s)\n' "$(git -C "$WIKI" status --porcelain | wc -l | tr -d ' ')"
+      else
+        printf 'git:          NOT A REPO — dream writes are not reversible until this is fixed\n'
+      fi
+      return 0 ;;
+    commit)
+      [ -d "$WIKI/.git" ] || die "not a git repo: $WIKI (run: git init there first; dream writes must be revertable)"
+      local msg="" added modified
+      while [ $# -gt 0 ]; do
+        case "$1" in -m) msg="$2"; shift 2 ;; *) shift ;; esac
+      done
+      git -C "$WIKI" add -A
+      # count files, not porcelain entries: an untracked facts/ collapses to one line
+      added="$(git -C "$WIKI" diff --cached --name-status | grep -c '^A' || true)"
+      modified="$(git -C "$WIKI" diff --cached --name-status | grep -c '^M' || true)"
+      [ "$((added + modified))" -gt 0 ] || { printf 'nothing to commit\n'; return 0; }
+      [ -n "$msg" ] || msg="dream $TODAY: ${added} new, ${modified} changed"
+      # its own file, and written before the commit so it belongs to the run it
+      # describes: housekeep rewrites reports/<date>.md wholesale, this one it
+      # never touches.
+      mkdir -p "$WIKI/reports"
+      printf '%s | %s\n' "$(date +%H:%M)" "$msg" >> "$WIKI/reports/$TODAY.dream.md"
+      git -C "$WIKI" add "$WIKI/reports/$TODAY.dream.md"
+      git -C "$WIKI" commit -q -m "$msg"
+      printf 'committed: %s\n' "$msg"
+      return 0 ;;
+    *) die "usage: wiki dream <export|status|commit> [--since D] [--dry-run] [-m msg]" ;;
+  esac
+}
+
 cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
   local target="${1:-$HOME/.agents/wiki}" assets="" f in_place=0
   local script_dir
@@ -328,7 +646,9 @@ cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
       die "target is not empty and is not this package: $target"
     fi
   fi
-  mkdir -p "$target/solutions" "$target/templates" "$target/reports" "$target/archive" "$target/bin"
+  # content root only: code lives in PKG, not here
+  mkdir -p "$target/solutions" "$target/facts" "$target/templates" \
+           "$target/reports" "$target/archive" "$target/.raw"
 
   # BSD cp -n exits 1 when it skips, which kills the script under set -e,
   # so test existence explicitly instead
@@ -344,19 +664,16 @@ cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
     cp "$assets/AGENTS-block.md" "$target/AGENTS-snippet.md"
   fi
 
-  cp "$_src" "$target/bin/wiki"
-  chmod +x "$target/bin/wiki"
-
-  WIKI_HOME="$target" "$target/bin/wiki" index >/dev/null || true
+  WIKI_HOME="$target" "$PKG/bin/wiki" index >/dev/null || true
 
   if [ "$in_place" = "1" ]; then
     printf 'wiki:  %s (in place: existing package files left untouched)\n' "$target"
   else
     printf 'wiki:  %s\n' "$target"
   fi
-  printf 'cmd:   %s/bin/wiki\n' "$target"
+  printf 'code:  %s/bin/wiki\n' "$PKG"
   printf '\nnext:\n'
-  printf '  1. cp %s/bin/wiki ~/.local/bin/wiki   # or link it\n' "$target"
+  printf '  1. ln -sf %s/bin/wiki ~/.local/bin/wiki\n' "$PKG"
   printf '  2. append %s/AGENTS-snippet.md to your agents instruction file\n' "$target"
   printf '  3. %s/bin/wiki housekeep              # first report\n' "$target"
   return 0
@@ -365,10 +682,14 @@ cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   find) shift; cmd_find "$@" ;;
+  show) shift; cmd_show "$@" ;;
+  stale) cmd_stale ;;
+  verify) shift; cmd_verify "$@" ;;
   list) cmd_list ;;
   new) shift; cmd_new "$@" ;;
   index) cmd_index ;;
   lint) cmd_lint ;;
   housekeep) shift; cmd_housekeep "$@" ;;
+  dream) shift; cmd_dream "$@" ;;
   *) sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# //'; exit 1 ;;
 esac
