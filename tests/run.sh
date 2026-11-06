@@ -231,7 +231,28 @@ case "$out" in
 esac
 [ -f "$TMP/k/.dream/last-run" ] && ok "export records the run window" || bad "export records the run window"
 
-echo "12. nothing is written outside the content root"
+echo "12. a UTC thread stamp is compared in UTC, not against a local clock"
+seed "$TMP/l"; export WIKI_HOME="$TMP/l"
+mkdir -p "$TMP/lbin"
+now_utc="$(python3 -c 'import datetime as d;print((d.datetime.now(d.timezone.utc)-d.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+cat > "$TMP/lbin/alma" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *threads*) printf '[{"id":"t-fresh","title":"fresh thread","updatedAt":"$now_utc"}]\n' ;;
+  *"thread messages"*) printf '{"messages":[{"id":"m1","message":{"role":"user","parts":[{"type":"text","text":"hello"}]}}],"hasMore":false}\n' ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "$TMP/lbin/alma"
+# a state file in the future would hide the thread; make it "just now" in UTC
+mkdir -p "$TMP/l/.dream" python3 -c "import datetime as d;print((d.datetime.now(d.timezone.utc)-d.timedelta(hours=1)).isoformat(timespec='seconds'))" > "$TMP/l/.dream/last-run"
+out="$(PATH="$TMP/lbin:$PATH" bash "$WIKI_BIN" dream export 2>&1)"
+case "$out" in
+  *"threads: 1"*) ok "a thread 30 min old in UTC is inside a 1h window" ;;
+  *) bad "a thread 30 min old in UTC is inside a 1h window" "$out" ;;
+esac
+
+echo "13. nothing is written outside the content root"
 seed "$TMP/i"; export WIKI_HOME="$TMP/i"
 before="$(find "$PKG" -newer "$PKG/scripts/wiki" -not -path "*/.git/*" -type f 2>/dev/null | wc -l | tr -d ' ')"
 bash "$WIKI_BIN" index >/dev/null; bash "$WIKI_BIN" verify >/dev/null 2>&1

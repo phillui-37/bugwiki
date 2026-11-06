@@ -33,6 +33,22 @@ TOOL_RESULT_CHARS = 600
 MAX_THREAD_CHARS = 400_000
 
 
+def parse_stamp(text: str) -> dt.datetime | None:
+    """Thread timestamps are UTC ("...Z"); the state file used to be local naive.
+    Compare in UTC only -- a naive local state against a UTC stamp silently
+    skips up to a timezone's worth of threads every night."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        when = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.astimezone()  # naive state = local wall clock
+    return when.astimezone(dt.timezone.utc)
+
+
 def sh(args: list[str]) -> str:
     out = subprocess.run(args, capture_output=True, text=True)
     if out.returncode != 0:
@@ -121,12 +137,14 @@ def main() -> int:
     # "minus one day" re-exports two days every night).
     since_dt = None
     if args.since:
-        since_dt = dt.datetime.fromisoformat(args.since)
+        since_dt = parse_stamp(args.since)
     elif os.path.exists(state_path):
-        since_dt = dt.datetime.fromisoformat(open(state_path).read().strip()) - dt.timedelta(hours=6)
-    else:
-        since_dt = dt.datetime.now() - dt.timedelta(days=args.days)
-    since = since_dt.date()
+        since_dt = parse_stamp(open(state_path).read())
+        if since_dt:
+            since_dt -= dt.timedelta(hours=6)  # overlap, so a late run cannot skip a thread
+    if since_dt is None:
+        since_dt = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
+    since = since_dt.astimezone().date()
 
     if args.thread:
         threads = [{"id": t, "title": t} for t in args.thread]
@@ -139,11 +157,8 @@ def main() -> int:
             stamp = t.get("updatedAt") or t.get("createdAt") or ""
             if not stamp:
                 continue
-            try:
-                when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).replace(tzinfo=None)
-            except ValueError:
-                continue
-            if when >= since_dt.replace(tzinfo=None):
+            when = parse_stamp(stamp)
+            if when and when >= since_dt:
                 picked.append(t)
         threads = picked
 
@@ -183,7 +198,7 @@ def main() -> int:
             fh.write(body)
     os.makedirs(state_dir, exist_ok=True)
     with open(state_path, "w", encoding="utf-8") as fh:
-        fh.write(dt.datetime.now().isoformat(timespec="seconds"))
+        fh.write(dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
     print(f"wrote {out_dir}")
     return 0
 
