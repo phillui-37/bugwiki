@@ -61,7 +61,7 @@ to avoid.
 
 ## Housekeeping
 
-`wiki housekeep` runs daily at 09:00 from an Alma cron job. It writes
+`wiki housekeep` runs daily at 09:00 from a scheduled job. It writes
 `reports/<date>.md` and never deletes a page: an obsolete one moves to
 `archive/` and stays on disk.
 
@@ -94,7 +94,7 @@ deletes the rest, so "nothing is deleted" applies to pages only.
   templates/entry.md     copy this for a new entry
   reports/<date>.md      daily housekeeping report (newest 30 kept)
   archive/<domain>/      obsolete pages, out of circulation, still on disk
-  bin/wiki               find / new / index / lint / housekeep / list
+  scripts/wiki           find / new / index / lint / housekeep / list
   install.sh             copy to ~/.agents/wiki, link `wiki`, install the skill
   AGENTS-snippet.md      the block installed in ~/.agents/AGENTS.md
 ```

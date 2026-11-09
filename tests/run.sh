@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Offline regression suite. No network, no alma calls, no writes outside TMPDIR.
+# Offline regression suite. No network or live Alma calls; temporary files stay in the workspace.
 # Run: tests/run.sh
 set -uo pipefail
 
 PKG="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WIKI_BIN="$PKG/scripts/wiki"
+TMP_PARENT="$PKG/.agents/test-tmp"
+mkdir -p "$TMP_PARENT"
+TMPDIR="$TMP_PARENT"; export TMPDIR
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP"; rmdir "$TMP_PARENT" 2>/dev/null || true' EXIT
 pass=0; fail=0
 
 ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -233,41 +236,8 @@ case "$(bash "$WIKI_BIN" find zzz-unique-token)" in
 esac
 expect_rc "a fact may link into solutions/" 0 bash "$WIKI_BIN" verify
 
-echo "11. dream export finds its helper and survives an empty thread list"
-seed "$TMP/k"; export WIKI_HOME="$TMP/k"
-mkdir -p "$TMP/kbin"
-cat > "$TMP/kbin/alma" <<'STUB'
-#!/usr/bin/env bash
-# stand-in for `alma threads --json`; proves the export path offline
-printf '[]\n'
-STUB
-chmod +x "$TMP/kbin/alma"
-out="$(PATH="$TMP/kbin:$PATH" bash "$WIKI_BIN" dream export 2>&1)"
-case "$out" in
-  *"threads: 0"*) ok "export resolves dream-export.py next to the script" ;;
-  *) bad "export resolves dream-export.py next to the script" "$out" ;;
-esac
-[ -f "$TMP/k/.dream/last-run" ] && ok "export records the run window" || bad "export records the run window"
-
-echo "12. a UTC thread stamp is compared against local saved state"
-seed "$TMP/l"; export WIKI_HOME="$TMP/l"
-mkdir -p "$TMP/lbin" "$TMP/l/.dream"
-cat > "$TMP/lbin/alma" <<'STUB'
-#!/usr/bin/env bash
-case "$*" in
-  *threads*) printf '[{"id":"t-fresh","title":"fresh thread","updatedAt":"2026-11-06T02:45:00Z"},{"id":"t-old","title":"old thread","updatedAt":"2026-11-06T02:00:00Z"}]\n' ;;
-  *"thread messages"*) printf '{"messages":[{"id":"m1","message":{"role":"user","parts":[{"type":"text","text":"hello"}]}}],"hasMore":false}\n' ;;
-  *) printf '{}\n' ;;
-esac
-STUB
-chmod +x "$TMP/lbin/alma"
-# Legacy local 11:00 HK state = 03:00 UTC; the 30m overlap starts at 02:30 UTC.
-printf '%s\n' '2026-11-06T11:00:00' > "$TMP/l/.dream/last-run"
-out="$(TZ=Asia/Hong_Kong PATH="$TMP/lbin:$PATH" bash "$WIKI_BIN" dream export 2>&1)"
-case "$out" in
-  *"threads: 1"*"t-fresh-fresh-thread.txt"*) ok "local HK state includes the fresh UTC thread and excludes the old one" ;;
-  *) bad "local HK state includes the fresh UTC thread and excludes the old one" "$out" ;;
-esac
+echo "11. dream exporter behavior through the public command"
+if python3 "$PKG/tests/test_dream_export.py"; then ok "generic and explicit Alma exporter contracts"; else bad "generic and explicit Alma exporter contracts"; fi
 
 echo "13. nothing is written outside the content root"
 seed "$TMP/i"; export WIKI_HOME="$TMP/i"

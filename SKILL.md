@@ -78,16 +78,17 @@ The dream is a **means**: its output lands in this same wiki as `facts/` pages,
 not in a separate store. Three parts, and only one of them is an agent:
 
 ```bash
-wiki dream export --since 2026-11-06   # 1. threads -> .raw/<date>/*.txt (compact)
+wiki dream export --input threads.json # 1. canonical JSON -> .raw/<date>/*.txt
+# Or: wiki dream export --input - < threads.json
+# Alma is optional and explicit: wiki dream export --source alma --since 2026-11-06
 # 2. analysis: one transcript at a time -> facts/*.md   (this is you, per §Dream method)
 wiki dream commit                      # 3. one git commit + one line in reports/<date>.dream.md
 ```
 
-`dream export` renders `USER:` / `ASSISTANT:` / `TOOL CALL <name>:` /
-`TOOL RESULT (<name>):` and drops `reasoning` and `step-start` parts. Alma's parts
-are `tool-<Name>`, never `tool_use` — matching `tool_use` silently reports zero
-tool uses. Measured 2026-11-06: 792,841 B of `--full` JSON → 158,428 B compact
-(5.0x), so a night of six threads is roughly one dollar of analysis.
+`dream export` renders text and tool calls/results; it does not invoke a model.
+Generic callers provide the documented `threads` JSON shape. The optional Alma
+adapter maps its `tool-<Name>` parts and preserves message timestamps. Existing
+Alma workflows add `--source alma` explicitly.
 
 ### Dream method (per transcript)
 
@@ -129,7 +130,7 @@ hands, one owner — otherwise the queue is nobody's.
 ## Install
 
 ```bash
-ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
+ln -sf ~/.agents/wiki/scripts/wiki ~/.local/bin/wiki
 wiki init                      # seed ~/.agents/wiki (or WIKI_HOME=<dir>)
 cd "$WIKI_HOME" && git init    # required before the first dream commit
 wiki verify --migration        # must pass before the schema is trusted

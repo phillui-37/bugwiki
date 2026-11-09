@@ -29,8 +29,8 @@ symptom to match on and the failed attempts to avoid.
   templates/entry.md
   reports/<date>.md              daily housekeeping report
   archive/<domain>/              obsolete pages, out of circulation, still on disk
-  bin/wiki                       the helper (bash)
-  bin/wiki.ps1 / wiki.cmd        the helper (Windows)
+  scripts/wiki                   the helper (bash)
+  scripts/wiki.ps1 / wiki.cmd    the helper (Windows)
 ```
 
 A page:
@@ -70,7 +70,7 @@ A command that shows output which changes. Printing a constant proves nothing.
 ```sh
 git clone https://github.com/phillui-37/bugwiki ~/.agents/wiki
 bash ~/.agents/wiki/scripts/wiki init ~/.agents/wiki
-ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
+ln -sf ~/.agents/wiki/scripts/wiki ~/.local/bin/wiki
 ```
 
 **Windows (PowerShell 5.1 or 7+)**
@@ -192,13 +192,46 @@ need no edit.
 wiki show <slug>        # kind, validity, inbound edges, supersession chain
 wiki stale              # expired, or past the per-kind limit
 wiki verify             # schema, dates, every edge resolves
-wiki dream export       # Alma threads -> .raw/<date>/*.txt (compact)
+wiki dream export --input threads.json # canonical thread JSON -> .raw/<date>/*.txt
+wiki dream export --input - < threads.json # same input from stdin
+wiki dream export --source alma         # explicitly fetch Alma threads
 wiki dream commit       # one git commit + one line in reports/<date>.dream.md
 ```
+
+`dream export` needs an explicit source. Generic callers use this canonical JSON shape (unknown fields may be omitted; each thread must have an `id`, `messages` array, and, for automatic selection, a timezone-aware `updatedAt`):
+
+```json
+{
+  "threads": [{
+    "id": "thread-123",
+    "title": "Example conversation",
+    "updatedAt": "2026-11-09T12:00:00+02:00",
+    "messages": [{
+      "id": "message-456",
+      "role": "user",
+      "timestamp": "2026-11-09T10:15:00+02:00",
+      "timezone": "Europe/Paris",
+      "content": "Hello"
+    }, {
+      "id": "message-789",
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Hi."},
+        {"type": "tool_call", "name": "Bash", "input": {"cmd": "pwd"}},
+        {"type": "tool_result", "name": "Bash", "output": "/workspace"}
+      ]
+    }]
+  }]
+}
+```
+
+`threads` is the feed; thread `id` is a safe filename key and `title` is display text. `updatedAt` is the thread event/update time used by `--since` filtering and must include an explicit UTC offset. Message `id` identifies the message. `timestamp` is the original sent-at value, kept with its supplied offset; it may differ from the thread event time. `timezone` is optional source timezone metadata (for example an IANA zone) and is preserved separately. Message `role` is `user`, `assistant`, or `tool`; `content` is text or an ordered array of text, tool call, and tool result parts. A tool-only message still gets its message header.
+
+The Alma adapter requires `--source alma`; it filters listed threads by the core-resolved cutoff before fetching messages. Checkpoints are independent per source: `.dream/last-run-input` and `.dream/last-run-alma`; each source reads and advances only its own checkpoint after a successful export. Automatic runs overlap the checkpoint by 30 minutes. `--since` supplies an explicit cutoff and `--thread` explicitly selects requested threads. Keep distinct feeds in separate `WIKI_HOME` roots: generic thread IDs are only unique inside their feed, and separate roots prevent collisions. Export renders transcripts only and does not invoke a model. Existing Alma workflows add `--source alma`. The legacy `.dream/last-run` is shown by `dream status` but is not used by the new exporter; the first run uses the default seven-day window unless you provide `--since`. Date-only cutoffs use UTC. The optional Alma adapter lists up to 200 threads and fails if a selected thread still has more messages at the 2,000-message pagination limit.
 
 A changed fact is never deleted: the old node gets `valid_to` + `status:
 obsolete`, the new one gets `supersedes: [old-slug]`. `PROTOCOL.md` has the
 thresholds and the handler model; `CHEZMOI.md` has the sync split (code syncs,
 content does not).
 
-`tests/run.sh` is the offline regression suite (21 checks, no network).
+`tests/run.sh` is the offline regression suite (no network or live Alma calls).

@@ -607,9 +607,15 @@ cmd_dream() {
       [ -x "$helper" ] || die "missing $helper"
       "$helper" --content-root "$WIKI" "$@" ;;
     status)
-      local state="$WIKI/.dream/last-run"
+      local state="$WIKI/.dream/last-run" source_state found=0
       printf 'content root: %s\n' "$WIKI"
-      printf 'last run:     %s\n' "$([ -f "$state" ] && cat "$state" || echo "never")"
+      for source_state in "$WIKI"/.dream/last-run-*; do
+        [ -f "$source_state" ] || continue
+        found=1
+        printf 'checkpoint (%s): %s\n' "${source_state##*-}" "$(cat "$source_state")"
+      done
+      [ "$found" -eq 1 ] || printf 'checkpoints:   never\n'
+      [ -f "$state" ] && printf 'legacy checkpoint (last-run): %s\n' "$(cat "$state")"
       printf 'raw dirs:     %s\n' "$(find "$WIKI/.raw" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
       printf 'facts:        %s\n' "$(find "$WIKI/facts" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
       if [ -d "$WIKI/.git" ]; then

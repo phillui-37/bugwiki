@@ -6,7 +6,7 @@ other along.
 
 | What | Sync? | Why |
 | --- | --- | --- |
-| `bin/wiki`, `bin/dream-export.py` | yes | code |
+| `scripts/wiki`, `scripts/dream-export.py`, `scripts/dream-source-alma.py` | yes | code |
 | `SKILL.md`, `assets/` | yes | setup and templates |
 | `WIKI/solutions/**`, `WIKI/facts/**` | **no** | machine-local knowledge; it references threads and paths that only exist here |
 | `WIKI/.raw/**` | **no** | transcripts, large, and the only poisonable input |
@@ -61,7 +61,7 @@ into a synced tree must ignore it explicitly:
 ## Per-machine setup after `chezmoi apply`
 
 ```bash
-ln -sf ~/.config/alma/skills/bugwiki/scripts/wiki ~/.local/bin/wiki
+ln -sf ~/.agents/wiki/scripts/wiki ~/.local/bin/wiki
 [ -d ~/.agents/wiki ] || wiki init
 cd ~/.agents/wiki && git init      # required: dream writes must be revertable
 wiki verify --migration
