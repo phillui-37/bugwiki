@@ -246,5 +246,30 @@ bash "$WIKI_BIN" index >/dev/null; bash "$WIKI_BIN" verify >/dev/null 2>&1
 after="$(find "$PKG" -newer "$PKG/scripts/wiki" -not -path "*/.git/*" -type f 2>/dev/null | wc -l | tr -d ' ')"
 expect_eq "package untouched by a run" "$before" "$after"
 
+echo "14. regression: separated-store init uses the shipped scripts entrypoint"
+export WIKI_HOME="$TMP/fresh-store"
+# Explicit target first: the pre-fix command must not fall back to the real HOME.
+bash "$WIKI_BIN" init "$WIKI_HOME" >"$TMP/init.out" 2>"$TMP/init.err"
+expect_eq "fresh init exits successfully" "0" "$?"
+expect_eq "fresh init has no missing bin/wiki error" "" "$(cat "$TMP/init.err")"
+case "$(cat "$TMP/init.out")" in
+  *"$PKG/scripts/wiki"*) ok "init prints the real package entrypoint" ;;
+  *) bad "init prints the real package entrypoint" ;;
+esac
+expect_rc "init writes the content index" 0 grep -q '<!-- index:start -->' "$WIKI_HOME/README.md"
+expect_rc "fresh store verifies" 0 bash "$WIKI_BIN" verify --migration
+# Isolate HOME so a regression cannot initialize the user's real store.
+env HOME="$TMP/isolated-home" WIKI_HOME="$TMP/env-store" bash "$WIKI_BIN" init >"$TMP/env-init.out" 2>&1
+expect_rc "init without a target honors WIKI_HOME" 0 test -f "$TMP/env-store/README.md"
+expect_rc "init does not use HOME when WIKI_HOME is set" 1 test -d "$TMP/isolated-home/.agents/wiki"
+git -C "$WIKI_HOME" init -q
+git -C "$WIKI_HOME" config user.name 'Bugwiki Test'
+git -C "$WIKI_HOME" config user.email 'bugwiki-test@example.invalid'
+expect_rc "fresh store ignores raw transcripts" 0 git -C "$WIKI_HOME" check-ignore .raw/example.txt
+expect_rc "fresh store can version dream reports" 1 git -C "$WIKI_HOME" check-ignore reports/example.dream.md
+expect_rc "fresh store can version solutions" 1 git -C "$WIKI_HOME" check-ignore solutions/demo/example.md
+expect_rc "fresh store supports dream commit" 0 bash "$WIKI_BIN" dream commit
+expect_eq "dream report is committed" "1" "$(git -C "$WIKI_HOME" ls-files 'reports/*.dream.md' | wc -l | tr -d ' ')"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

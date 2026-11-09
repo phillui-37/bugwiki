@@ -4,9 +4,9 @@ The only block that should mention the wiki. Replace the older "bug/solution wik
 
 ```md
 - memory wiki at ~/.agents/wiki (CLI: <bugwiki-repo>/scripts/wiki); first place to look, not the last. One graph, two kinds: `solutions/` costly bugs, `facts/` things now true
-    - before acting on remembered state: `wiki find "<exact term>"`, open at most 2 nodes, follow `supersedes` to the chain tail; `obsolete`/`conflict`/expired means "I don't know", never an answer
+    - before acting on remembered state: `wiki find "<exact term>"`, start with at most 2 matching nodes, then follow `supersedes` to the chain tail; `obsolete`/`conflict`/expired means "I don't know", never an answer
     - before debugging: same search (do not grep the tree by hand); check `env:`/`status:`/`last_verified:` before applying
-    - a page that answered a search is evidence: bump `recurrence:` and `last_seen:`, never gated on cost
+    - a page that answered a search is evidence: update `recurrence:` and `last_seen:` on distinct dates, never gated on cost
     - new page gated on cost: 30+ min, 3+ failed attempts, or an error the text did not explain -> `wiki new <domain> <slug>`, keep the failed attempts; a cheap typo/flag/error-named fix gets no page and no bump
     - a fact needs `source:` pointing at a real thread/message id; `status: verified` only when it traces to a tool result, else `open`; a changed fact gets `valid_to` + `status: obsolete` on the old node and `supersedes: [old]` on the new one, never a deletion
     - volatile facts (branch/config/version) carry `expires` (14d default); `wiki stale` lists what is past its limit, `wiki verify` and `wiki lint` must pass before a commit

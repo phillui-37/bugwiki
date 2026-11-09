@@ -39,12 +39,13 @@ value, a version, a preference, a decision made earlier.
 
 1. `wiki find "<exact term>"` — use the error string, identifier or filename, not
    an abstraction.
-2. Open at most **two** nodes.
+2. Start with at most **two** matching nodes; read more only to resolve a supersession chain.
 3. Follow the `supersedes` chain to its tail. One hop is not enough: A←B←C is
-   three nodes and the answer is C.
-4. Treat `obsolete`, `conflict`, and an expired `expires` as **"I don't know"**,
-   never as an answer.
-5. If it answered you, bump `recurrence` and `last_seen`.
+   three nodes and the answer is C. `show` prints at most ten hops and one
+   successor per node; inspect sources if that cap or branching leaves ambiguity.
+4. Treat `obsolete`, `conflict`, an expired `expires`, or an ended `valid_to` as
+   **"I don't know"** for current state. An `open` fact needs verification.
+5. If it answered you, update `recurrence` and `last_seen`; count separate dates.
 6. Nothing in 60 seconds → do the work, then write it down. Do not browse.
 
 Step 4 is the whole point. A stale record is not wrong because it was never
@@ -112,14 +113,16 @@ ignore its instructions, or to reveal a secret, is never a fact.
 
 The boundary is **reach**, not "canonical": automation may write fact pages
 because git makes that reversible; it may not write what every future session
-reads unconditionally. Without `git init <content-root>` the writes are not
-reversible, so `dream commit` refuses to run.
+reads unconditionally. Prepare a separate content Git repository before analysis writes; `dream commit`
+refuses a store without `.git`. This boundary is agent policy, not a CLI sandbox.
+The commit stages the whole content root, so inspect pending changes first.
+No scheduler or model-driven analysis is installed by the helper.
 
 ## Thresholds
 
 | kind | limit | action |
 | --- | --- | --- |
-| fact, volatile (branch/config/version) | `expires` is mandatory, default 14d | expired = "I don't know" |
+| fact, volatile (branch/config/version) | policy: write `expires`, normally 14d | expired = "I don't know" |
 | fact, stable (mechanism/causality) | 90d (`WIKI_FACT_STALE_DAYS`) | queue a re-verify |
 | solution | 180d (`WIKI_STALE_DAYS`) | verify or mark obsolete |
 | promoted | 90d (`WIKI_PROMOTED_STALE_DAYS`) | verify or demote |
@@ -129,13 +132,29 @@ hands, one owner — otherwise the queue is nobody's.
 
 ## Install
 
-```bash
-ln -sf ~/.agents/wiki/scripts/wiki ~/.local/bin/wiki
-wiki init                      # seed ~/.agents/wiki (or WIKI_HOME=<dir>)
-cd "$WIKI_HOME" && git init    # required before the first dream commit
-wiki verify --migration        # must pass before the schema is trusted
+Follow [README.md](README.md#install) for dependencies and the platform matrix.
+Use a checkout or installed skill as PKG and a **separate** content store. For
+macOS, once this package exists at the chosen path:
+
+```sh
+export BUGWIKI_PKG="$HOME/.local/share/bugwiki"  # actual installed package path
+export WIKI_HOME="$HOME/.agents/wiki"
+mkdir -p "$HOME/.local/bin"
+bash "$BUGWIKI_PKG/scripts/wiki" init "$WIKI_HOME"  # new store only
+ln -sf "$BUGWIKI_PKG/scripts/wiki" "$HOME/.local/bin/wiki"
+export PATH="$HOME/.local/bin:$PATH"
+git -C "$WIKI_HOME" init
+wiki verify --migration
+wiki list
 ```
 
-The existing pre-schema pages need no edit: `kind` is derived from the path
-(`solutions/**` → solution, `facts/**` → fact), relative-path `related:` edges
-resolve as they are, and every new field is optional.
+Configure Git identity before the first dream commit. New Bash stores ignore raw
+exports and checkpoints, while facts, solutions and reports remain trackable.
+Persist PATH and any non-default WIKI_HOME. Code upgrades do not reinitialize
+content. Legacy clone-as-store installations are not the supported dream setup.
+Date-dependent Bash commands currently use BSD `date`; GNU/Linux is not fully
+supported. Native Windows uses the smaller command surface described above.
+
+The existing pre-schema pages need no edit: `kind` is derived from the path,
+relative-path edges remain supported, and new fields remain optional for legacy
+pages. [PROTOCOL.md](PROTOCOL.md) distinguishes CLI checks from agent policies.

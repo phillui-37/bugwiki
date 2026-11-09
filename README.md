@@ -23,14 +23,15 @@ symptom to match on and the failed attempts to avoid.
 ```text
 ~/.agents/wiki/
   README.md                      router + index
-  INDEX.md                       index instead, when the store is a repo clone
   LESSONS.md                     rules that repeated (empty is a valid state)
   solutions/<domain>/<slug>.md   one bug per file
   templates/entry.md
+  facts/<slug>.md                sourced facts and their validity
+  .raw/                          local transcript exports (gitignored)
+  .dream/                        export checkpoints (gitignored)
   reports/<date>.md              daily housekeeping report
   archive/<domain>/              obsolete pages, out of circulation, still on disk
-  scripts/wiki                   the helper (bash)
-  scripts/wiki.ps1 / wiki.cmd    the helper (Windows)
+  .git/                          local content history; no remote required
 ```
 
 A page:
@@ -65,38 +66,96 @@ A command that shows output which changes. Printing a constant proves nothing.
 
 ## Install
 
-**macOS / Linux**
+Keep two directories: **PKG** is this repository (code and templates); **WIKI_HOME**
+is a separate, machine-local content store. Update PKG with Git or your skill
+manager. Give WIKI_HOME its own local Git history; do not push knowledge or raw
+transcripts to this public repository. See [sync setup](CHEZMOI.md).
+
+### Platform support
+
+| Feature | macOS (Bash) | Native Windows (PowerShell 5.1 / 7+) |
+| --- | --- | --- |
+| Solution pages: `init`, `find`, `list`, `new`, `index`, `lint`, `housekeep` | Available | Available |
+| Fact graph: `new fact`, `show`, `stale`, `verify` | Available | Not implemented |
+| Transcript export and `dream` | Available | Not implemented |
+
+The file format can be shared, but the command surfaces differ. The native Windows
+helper covers solution pages only; do not interpret `wiki new fact` there as the
+Bash fact command. The Bash helper uses BSD `date -j -f` for date validation,
+staleness and archive ages. GNU/Linux (including WSL) is not fully supported: those
+commands need a compatible date utility and have not been validated there. The
+commands below are verified on macOS; do not infer Linux support from Bash alone.
+
+### macOS (Bash)
+
+Prerequisites: Git, Bash, ripgrep (`rg`), and Python 3.10+ for transcript export and
+the regression suite. On macOS, `brew install git ripgrep python` provides the
+non-system dependencies. Linux users must resolve the date limitation above
+before relying on verification, staleness or archive behavior.
+
+Run this once for a **new** store (choose unused directories):
 
 ```sh
-git clone https://github.com/phillui-37/bugwiki ~/.agents/wiki
-bash ~/.agents/wiki/scripts/wiki init ~/.agents/wiki
-ln -sf ~/.agents/wiki/scripts/wiki ~/.local/bin/wiki
+# Code and content must be different directories.
+export BUGWIKI_PKG="$HOME/.local/share/bugwiki"
+export WIKI_HOME="$HOME/.agents/wiki"
+mkdir -p "$(dirname "$BUGWIKI_PKG")" "$HOME/.local/bin"
+git clone https://github.com/phillui-37/bugwiki "$BUGWIKI_PKG"
+bash "$BUGWIKI_PKG/scripts/wiki" init "$WIKI_HOME"
+ln -sf "$BUGWIKI_PKG/scripts/wiki" "$HOME/.local/bin/wiki"
+export PATH="$HOME/.local/bin:$PATH"
+git -C "$WIKI_HOME" init
+wiki verify --migration
+wiki list
 ```
 
-**Windows (PowerShell 5.1 or 7+)**
+`init` prints the content root and the real `scripts/wiki` entrypoint without
+missing-file errors. `verify --migration` must exit 0; `list` is empty in a new
+store. Configure Git's `user.name` and `user.email` for the content repository
+before the first `wiki dream commit` if they are not already configured.
+Persist PATH and, for a non-default store, WIKI_HOME in your shell startup file.
+`init` uses WIKI_HOME when no target is passed and refuses an existing populated
+content store. Do not rerun it as an upgrade step.
+
+### Native Windows — solution pages only
+
+Prerequisites: Git and PowerShell 5.1 or 7+. Ripgrep is optional here; the helper
+falls back to `Select-String`.
 
 ```powershell
-git clone https://github.com/phillui-37/bugwiki $HOME\.agents\wiki
-powershell -NoProfile -ExecutionPolicy Bypass -File $HOME\.agents\wiki\scripts\wiki.ps1 init $HOME\.agents\wiki
-# then add $HOME\.agents\wiki\bin to your PATH — `wiki.cmd` is the shim, so `wiki find "..."` works
+$env:BUGWIKI_PKG = Join-Path $HOME '.local/share/bugwiki'
+$env:WIKI_HOME = Join-Path $HOME '.agents/wiki'
+New-Item -ItemType Directory -Force (Split-Path $env:BUGWIKI_PKG) | Out-Null
+git clone https://github.com/phillui-37/bugwiki $env:BUGWIKI_PKG
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:BUGWIKI_PKG/scripts/wiki.ps1" init $env:WIKI_HOME
+$env:Path = "$env:BUGWIKI_PKG/scripts;$env:Path"
+wiki.cmd list
 ```
 
-Then append the block from `assets/AGENTS-block.md` to your agents instruction
-file (`~/.agents/AGENTS.md`, `AGENTS.md`, `CLAUDE.md` — whatever your host reads).
-That block is what makes the store live: search before debugging, write after a
-costly fix, bump when a page answers you.
+Persist that scripts directory in PATH, and WIKI_HOME if you use a non-default
+store. The empty store lists no pages. Use the package's `scripts/wiki.cmd` so
+package updates take effect; the older copies seeded in the store's `bin/` are
+not the recommended PATH target. Graph and dream commands are unavailable in
+this native helper.
 
-Cloning the repo *is* the store. `wiki index` then writes `INDEX.md` instead of
-touching this README, and `solutions/`, `reports/`, `archive/`, `bin/`,
-`templates/` and `LESSONS.md` are gitignored — so `git status` stays clean while
-you use it.
+### Agent integration and existing installations
 
-Same store on both platforms: the frontmatter, the reports, the archive rules and
-the exit codes match. Only the helper differs — `scripts/wiki` (bash) or
-`scripts/wiki.ps1` + `scripts/wiki.cmd` (Windows).
+Append [assets/AGENTS-block.md](assets/AGENTS-block.md) to the instruction file
+your host reads. For native Windows, use only its solution search/write policy;
+omit Bash-only graph verification and dream instructions. No scheduler is
+installed automatically. Schedule housekeeping or an agent's dream pass only
+when you want those tasks to run.
 
-Hosts that scan skill directories can install this repo directly as a skill —
-`SKILL.md` is at the root.
+Hosts that scan skill directories can install this repo as a skill (`SKILL.md`
+is at the root). Set BUGWIKI_PKG to that installed directory and follow the
+separate-store setup, skipping the clone.
+
+Legacy clone-as-store installations remain readable, with their index in
+`INDEX.md`. They are not the supported dream setup: the package ignores
+`solutions/` and `reports/`, which conflicts with versioning content and dream
+reports. Keep the existing store intact; prepare and verify a separate content
+repository before switching WIKI_HOME. Do not remove ignore rules or force-add
+private knowledge to the public package checkout.
 
 ## Usage
 
@@ -104,8 +163,8 @@ Hosts that scan skill directories can install this repo directly as a skill —
 | --- | --- |
 | `wiki find "429 Too Many Requests"` | literal search; `WIKI_REGEX=1` for a regex |
 | `wiki list` | every page as `domain/slug` |
-| `wiki new dsh config-editor-loss` | new page from the template, reindexes |
-| `wiki index` | regenerate the README index table |
+| `wiki new editor config-loss` | new page from the template, reindexes |
+| `wiki index` | regenerate the content README index table |
 | `wiki lint` | bad fields, stale pages, promotion candidates; exits 1 on errors |
 | `wiki housekeep [--apply]` | archive queue, promotions, duplicate pairs → `reports/<date>.md` |
 | `wiki init [target]` | scaffold a new store from the bundled assets |
@@ -138,7 +197,7 @@ same bug resets the counter to 1 — search first.
 
 ## Housekeeping
 
-A daily cron (`wiki housekeep --apply`) reindexes and moves pages whose
+When you schedule or run `wiki housekeep --apply`, it reindexes and moves pages whose
 `obsolete_since` is older than 90 days into `archive/`. It never deletes a page and
 never overwrites an archived file; a collision is reported instead.
 
@@ -163,8 +222,8 @@ gate, the second-occurrence bar, and the `recurrence:` counter.
 ## Design notes
 
 - **Two helpers, one contract.** `scripts/wiki` (bash) and `scripts/wiki.ps1`
-  produce the same output, exit codes and report layout, so an agent on either
-  platform reads the same store. The PowerShell port uses `rg` when it exists and
+  share the solution-page format and older command contract. Graph and dream
+  commands are Bash-only; see the platform matrix above. The PowerShell port uses `rg` when it exists and
   falls back to `Select-String`, because Windows machines often lack ripgrep.
 - **bash + ripgrep.** Retrieval is `rg -F` over a few dozen files. At 3 pages this
   is enough; at 500 it is still fast, and the failure mode (a paraphrase the
@@ -230,8 +289,7 @@ wiki dream commit       # one git commit + one line in reports/<date>.dream.md
 The Alma adapter requires `--source alma`; it filters listed threads by the core-resolved cutoff before fetching messages. Checkpoints are independent per source: `.dream/last-run-input` and `.dream/last-run-alma`; each source reads and advances only its own checkpoint after a successful export. Automatic runs overlap the checkpoint by 30 minutes. `--since` supplies an explicit cutoff and `--thread` explicitly selects requested threads. Keep distinct feeds in separate `WIKI_HOME` roots: generic thread IDs are only unique inside their feed, and separate roots prevent collisions. Export renders transcripts only and does not invoke a model. Existing Alma workflows add `--source alma`. The legacy `.dream/last-run` is shown by `dream status` but is not used by the new exporter; the first run uses the default seven-day window unless you provide `--since`. Date-only cutoffs use UTC. The optional Alma adapter lists up to 200 threads and fails if a selected thread still has more messages at the 2,000-message pagination limit.
 
 A changed fact is never deleted: the old node gets `valid_to` + `status:
-obsolete`, the new one gets `supersedes: [old-slug]`. `PROTOCOL.md` has the
-thresholds and the handler model; `CHEZMOI.md` has the sync split (code syncs,
-content does not).
+obsolete`, the new one gets `supersedes: [old-slug]`. [PROTOCOL.md](PROTOCOL.md) defines the current schema, thresholds and agent
+policy; [CHEZMOI.md](CHEZMOI.md) explains the sync split (code syncs, content does not).
 
 `tests/run.sh` is the offline regression suite (no network or live Alma calls).

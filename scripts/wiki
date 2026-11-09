@@ -650,7 +650,7 @@ cmd_dream() {
 }
 
 cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
-  local target="${1:-$HOME/.agents/wiki}" assets="" f in_place=0
+  local target="${1:-$WIKI}" assets="" f in_place=0
   local script_dir
   script_dir="$(cd -P "$(dirname "$_src")" && pwd)"
   # assets ship with the skill; fall back to the running wiki's own docs
@@ -687,18 +687,24 @@ cmd_init() { # cmd_init [target] — scaffold a wiki from the skill's assets
     cp "$assets/AGENTS-block.md" "$target/AGENTS-snippet.md"
   fi
 
-  WIKI_HOME="$target" "$PKG/bin/wiki" index >/dev/null || true
+  # A separate content repo versions knowledge and reports, not raw exports.
+  # Never replace ignore rules in an existing checkout.
+  if [ "$in_place" = "0" ] && [ ! -e "$target/.gitignore" ]; then
+    printf '/.raw/\n/.dream/\n' > "$target/.gitignore"
+  fi
+  WIKI_HOME="$target" bash "$script_dir/wiki" index >/dev/null
 
   if [ "$in_place" = "1" ]; then
-    printf 'wiki:  %s (in place: existing package files left untouched)\n' "$target"
+    printf 'wiki:  %s (legacy in-place layout; use a separate content root for dream commits)\n' "$target"
   else
     printf 'wiki:  %s\n' "$target"
   fi
-  printf 'code:  %s/bin/wiki\n' "$PKG"
+  printf 'code:  %s/wiki\n' "$script_dir"
   printf '\nnext:\n'
-  printf '  1. ln -sf %s/bin/wiki ~/.local/bin/wiki\n' "$PKG"
-  printf '  2. append %s/AGENTS-snippet.md to your agents instruction file\n' "$target"
-  printf '  3. %s/bin/wiki housekeep              # first report\n' "$target"
+  printf '  1. mkdir -p ~/.local/bin && ln -sf "%s/wiki" ~/.local/bin/wiki\n' "$script_dir"
+  printf '  2. set WIKI_HOME="%s" and add ~/.local/bin to PATH\n' "$target"
+  printf '  3. append %s/AGENTS-snippet.md to your agents instruction file\n' "$target"
+  printf '  4. git -C "%s" init              # local content history, before dream\n' "$target"
   return 0
 }
 

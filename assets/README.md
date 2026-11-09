@@ -1,137 +1,78 @@
 # Agent Wiki
 
-One markdown page per costly bug. The page holds the exact symptom, the cause,
-the fix that worked, and the attempts that failed. Read it before you debug,
-write it after you verify — but only if the bug cost real time.
-
-Layout borrowed from [magpie](https://github.com/yetone/magpie), with three
-deliberate differences. Magpie's `LESSONS.md` takes a lesson on the day a nightly
-commit review finds it and promotes it at 3 review days into
-`docs/code-standards.md`; its `docs/subsystems/` pages document current contracts,
-not bug history. Here:
-
-1. **Entry bar is cost, not first sight** — there is no nightly review writing
-   this file, so the writer is the agent that just spent an hour debugging.
-2. **`LESSONS.md` starts at the second occurrence** — a personal wiki spans every
-   tool on the machine and would flood at magpie's bar.
-3. **Promotion lands in `AGENTS.md`** — the file every agent already reads, not a
-   separate standards doc. There are no contract pages here; `solutions/` is
-   incident history and is not a substitute for them.
-
-## Two gates, not one
-
-**New page — gated on cost.** Not every fix deserves a page:
-
-| Signal | Costly? |
-| --- | --- |
-| Wall clock 30+ min on the fix | yes |
-| 3+ attempts that failed before one worked | yes |
-| Root cause is not visible in the error text | yes |
-| Typo, wrong flag, missing dependency named by the error | no |
-
-Costly → one page. Cheap → nothing. A wiki with every typo in it is worse than no
-wiki, because search returns noise and nobody trusts the results.
-
-**Recurrence bump — not gated at all.** If an existing page answered your search,
-bump `recurrence:` and `last_seen:` before you continue. A wiki hit is cheap by
-definition, so applying the cost gate here would suppress the only counter the
-ladder runs on.
-
-## Fields that carry meaning
-
-| Field | Written when | Read by |
-| --- | --- | --- |
-| `recurrence:` | the bug bites again | `lint`, `housekeep` → promotion |
-| `last_seen:` | the bug bites again | nothing automatic; recency of recurrence |
-| `last_verified:` | you re-check the fix still works | `lint`, `housekeep` → staleness |
-| `obsolete_since:` | you set `status: obsolete` | `housekeep` → archiving starts here |
-
-## The ladder (one fact, one place)
-
-| Occurrence | Lives in | Moved by |
-| --- | --- | --- |
-| 1st, costly | `solutions/<domain>/<slug>.md` | `wiki new` |
-| 2nd | one line in `LESSONS.md` | `wiki lint` flags the page, you add the line |
-| 3rd | `AGENTS.md` standing rule | you, and delete the `LESSONS.md` line |
-
-Recurrence is `recurrence:` on the page, counted in occurrences on separate days.
-Bump it when the bug bites again; that counter is the only reason the chain
-works. Writing a second page for the same bug resets it to 1 — the failure mode
-to avoid.
-
-## Housekeeping
-
-`wiki housekeep` runs daily at 09:00 from a scheduled job. It writes
-`reports/<date>.md` and never deletes a page: an obsolete one moves to
-`archive/` and stays on disk.
-
-| Threshold | Default | Env override | Applies to |
-| --- | --- | --- | --- |
-| Stale | 180 d | `WIKI_STALE_DAYS` | `last_verified` older than N days → verify or mark obsolete |
-| Archive | 90 d | `WIKI_ARCHIVE_DAYS` | `obsolete_since` older than N days → moved out of `solutions/` |
-| LESSONS max | 12 rows | `WIKI_LESSONS_MAX` | above this, promote to `AGENTS.md` or drop |
-| Duplicate | 55 % | `WIKI_DUP_JACCARD` | `oneliner:` token overlap that counts as a duplicate |
-| Dup scan starts | 8 pages | `WIKI_DUP_MIN_PAGES` | below this the pair scan is noise |
-| Reports kept | 30 | `WIKI_REPORTS_KEEP` | newest N daily reports |
-
-`--apply` (what cron runs) moves the archive queue and reindexes. Everything else
-is left in the report for a person to decide, because "this is obsolete" is a
-judgement about a tool, not a fact about a date.
-
-Two limits are deliberate: a page with `status: obsolete` but no
-`obsolete_since:` is reported, never moved — otherwise marking it obsolete would
-archive it the same day. And a move never overwrites an existing file in
-`archive/`; a collision is reported instead. `reports/` keeps the newest 30 and
-deletes the rest, so "nothing is deleted" applies to pages only.
+This directory is a machine-local content store. The installed bugwiki package
+holds scripts and templates elsewhere; do not put package code or a public
+remote in this content repository. See the package's README and PROTOCOL.md for
+installation, platform support and the full contract.
 
 ## Layout
 
 ```text
-~/.agents/wiki/
-  README.md              this file: the router, plus the index table
-  LESSONS.md             rules that repeated; empty is a valid state
-  solutions/<domain>/<slug>.md   one bug per file
-  templates/entry.md     copy this for a new entry
-  reports/<date>.md      daily housekeeping report (newest 30 kept)
-  archive/<domain>/      obsolete pages, out of circulation, still on disk
-  scripts/wiki           find / new / index / lint / housekeep / list
-  install.sh             copy to ~/.agents/wiki, link `wiki`, install the skill
-  AGENTS-snippet.md      the block installed in ~/.agents/AGENTS.md
+solutions/<domain>/<slug>.md   costly bugs, fixes and failed attempts
+facts/<slug>.md                sourced facts with scope and validity
+README.md                     this guide and the generated index
+LESSONS.md                    short lessons from repeated occurrences
+templates/entry.md             template for new solutions
+reports/<date>.md              housekeeping report
+reports/<date>.dream.md        dream commit log
+archive/<domain>/             obsolete solutions, retained on disk
+.raw/                         transcript exports; ignored by Git and search
+.dream/                       source checkpoints; ignored by Git
+.git/                         local knowledge history
 ```
 
-Domains in use: `alma`, `dsh`. Add a domain only when a second entry needs it.
-Never nest deeper than `solutions/<domain>/`.
+## Search and reuse
 
-## Read protocol (cheap, do it first)
+Run `wiki find "<exact error or identifier>"`. Start with one or two matching
+pages; check environment, status and verification dates. Follow supersession to
+its current endpoint, inspecting extra nodes when needed. An obsolete, conflicting,
+expired or ended fact is not current knowledge; an open fact needs verification.
+`wiki show` has a ten-hop display cap and does not resolve branching for you.
 
-1. Search the exact string from the error before you form a theory:
+When a page answers a question, update `last_seen` and `recurrence`, counting
+occurrences on distinct dates. Reuse is not subject to the cost gate below.
 
-   ```sh
-   wiki find "429 Too Many Requests"
-   # or, no helper installed:
-   rg -i -l "429|coding plan" ~/.agents/wiki/solutions
-   ```
+## Write
 
-2. Open the 1–2 matching pages only. Do not load the whole tree.
-3. Check `env:`, `status:` and `last_verified:`. A `verified` fix from a different
-   macOS major version or provider product line is a lead, not an answer; an old
-   `last_verified` means the fix may have rotted with the tool.
-4. If it answered you, bump `recurrence:` and `last_seen:` before moving on.
+- `wiki new <domain> <slug>` creates a solution. Use it for a fix that took 30+
+  minutes, three failed attempts, or a cause the error did not explain. Keep the
+  exact symptom, environment, failed attempts, working fix and verification.
+- `wiki new fact <slug>` creates a fact. Supply a real source and scope. Use
+  `verified` for a claim backed by a source tool result; narration or inference
+  remains `open`. Set an explicit expiry for volatile state, normally 14 days.
+- When a fact changes, retain the old node with `status: obsolete` and `valid_to`,
+  and link the new node with `supersedes`. Do not create duplicate accounts of
+  the same knowledge. Never write credentials.
 
-## Write protocol
+Use flat frontmatter and inline edge lists. Dates are `YYYY-MM-DD`; preserve
+original timestamps and timezones in the body when needed. Run `wiki verify`
+and `wiki lint` before a content commit. These check structure, not source truth.
+Graph commands and fact creation require the Bash helper; native Windows covers
+solution pages only. Date-dependent Bash commands require BSD-style `date`.
 
-1. `wiki new alma zai-coding-plan-key-429` — creates the page from the template
-   and reindexes.
-2. Fill every section. **Keep the failed attempts**: they are the expensive part
-   to rediscover.
-3. Paste exact error text, not a paraphrase. Search is textual.
-4. Set `oneliner:` — the reusable sentence behind the bug. That is the promotion
-   candidate, and the thing `wiki find` prints first, because the second
-   occurrence usually arrives in different words than the first.
-5. Bug again? Edit that page: `recurrence: 2`, new `last_seen:`. Do not create a
-   second page — that resets the counter and the ladder stalls.
-6. `wiki lint` before you leave. It reports stale pages, missing fields, and
-   anything at `recurrence: >= 2` that belongs in `LESSONS.md`.
+## Maintenance
+
+Nothing is scheduled automatically. Run or schedule `wiki housekeep --apply`
+when wanted. It archives obsolete solutions after 90 days from `obsolete_since`,
+never overwrites an archived page, and retains the newest 30 report entries.
+Missing `obsolete_since` is reported rather than guessed. `wiki stale` reports
+fact and solution staleness; an agent must perform the verification.
+
+Default re-verification ages are 180 days for solutions and 90 for stable or
+promoted facts. Explicit expiry takes priority. The package documents the
+`WIKI_*` threshold overrides.
+
+The promotion policy is first costly occurrence → solution, second → a line in
+`LESSONS.md`, third → a separately approved agent rule. Housekeeping reports
+candidates; it does not promote them. Dream analysis may write facts and qualifying
+solutions, but not unconditional agent instructions or `maturity: promoted`.
+
+For dream work, export explicit input with `wiki dream export --input FILE` (or
+explicitly use `--source alma`), have an agent analyze the transcripts, verify the
+pages, and run `wiki dream commit`. Prepare local Git history and identity before
+analysis writes. The commit stages all content-root changes; inspect them first.
+Raw exports and checkpoints stay untracked. Reports use the `.dream.md` suffix so
+housekeeping does not overwrite that day's dream log.
 
 ## Index
 
@@ -139,7 +80,5 @@ Never nest deeper than `solutions/<domain>/`.
 
 | Page | Domain | Status | Last seen |
 | --- | --- | --- | --- |
-| [Z.ai Coding Plan key returns 429 for every model](solutions/alma/zai-coding-plan-key-429.md) | alma | workaround | 2026-11-02 |
-| [dsh-config-editor silently deletes config blocks it does not model](solutions/dsh/config-editor-rewrites-whole-document.md) | dsh | verified | 2026-11-02 |
-| [DeepSeek Harness fails because the continuation session keeps the old provider](solutions/dsh/continuation-session-keeps-old-provider.md) | dsh | verified | 2026-11-02 |
+
 <!-- index:end -->
