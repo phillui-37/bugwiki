@@ -50,7 +50,9 @@ def message(raw):
     out = {"id": msg.get("id", raw.get("id", "")), "role": role}
     stamp = msg.get("timestamp", msg.get("createdAt", raw.get("timestamp", raw.get("createdAt"))))
     if stamp is not None: out["timestamp"] = stamp
-    timezone = msg.get("timezone", msg.get("timeZone", raw.get("timezone", raw.get("timeZone"))))
+    timezone = raw.get("metadata", {}).get("sentAtTimeZone")
+    if timezone is None:
+        timezone = msg.get("timezone", msg.get("timeZone", raw.get("timezone", raw.get("timeZone"))))
     if timezone is not None: out["timezone"] = timezone
     content = []
     for part in msg.get("parts", msg.get("content", [])) or []:

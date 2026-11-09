@@ -163,6 +163,22 @@ elif a[0:2]==['thread','messages']:
         text = next((self.root / ".raw").glob("*/*.txt")).read_text()
         self.assertIn("2026-11-09T11:00:00Z", text)
 
+    def test_alma_metadata_sent_at_timezone_is_preserved(self):
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        raw = {"id": "m-source", "timestamp": "2026-11-09T05:53:46.632Z",
+               "metadata": {"sentAtTimeZone": "Asia/Hong_Kong"},
+               "message": {"role": "user", "parts": [{"type": "text", "text": "hello"}]}}
+        page = json.dumps({"messages": [raw], "hasMore": False})
+        alma = bindir / "alma"
+        alma.write_text("#!/usr/bin/env python3\nprint(" + repr(page) + ")\n", encoding="utf-8")
+        alma.chmod(0o755)
+        result = self.run_wiki("--source", "alma", "--thread", "observed-shape", path=bindir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = next((self.root / ".raw").glob("*/*.txt")).read_text()
+        self.assertIn("timestamp=2026-11-09T05:53:46.632Z", text)
+        self.assertIn("timezone=Asia/Hong_Kong", text)
+
     def test_status_shows_source_checkpoints_and_labeled_legacy_state(self):
         state = self.root / ".dream"
         state.mkdir()
