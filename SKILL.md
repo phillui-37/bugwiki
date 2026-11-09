@@ -1,6 +1,6 @@
 ---
 name: bugwiki
-description: One markdown memory graph for an agent — costly bugs (`solutions/`) and distilled facts (`facts/`) in the same namespace, typed edges (supersedes/contradicts/related), and a nightly "dream" pass that turns transcripts into fact pages. Use before debugging or before acting on remembered state, and after a costly fix or a session worth keeping.
+description: Keep costly bugs and facts in one Markdown graph with typed links and nightly dreams. Use before debugging or acting on remembered state, and after costly fixes or sessions worth keeping.
 ---
 
 # bugwiki
