@@ -44,3 +44,20 @@ To stop before a job timeout, stop beginning new transcripts, finish or leave th
 Only one dream writer may operate on a wiki at a time. The workflow is not a concurrent scheduler. It records acknowledgements and source-coverage attestations; it cannot prove that a person or model actually read the emitted text. Resolve missing evidence from its original source before using `--source-complete`; seeing the end of a compact export is insufficient.
 
 The new commands require manifest-backed batches. Existing flat `.raw/<date>/*.txt` exports and older checkpoints are not migrated automatically. Deploy the package and update the caller's command sequence together after any existing recovery is reconciled. This source change does not install itself or alter a live nightly schedule.
+
+
+## Execution events and timeout tracing
+
+Mutating dream commands append JSONL events under `.dream/logs/events-YYYY-MM-DD.jsonl` (UTC date). Every event has an ISO 8601 UTC timestamp, an invocation ID, action, stage, status, a fixed descriptive message and elapsed milliseconds. Batch and run IDs are attached once known. Source fetch, chunk emission/acknowledgement, analysis outcomes, owned-file registration, verify/lint start and end, commit preparation/publication, and partial/success receipts are recorded. Verification events also carry their own duration; receipt events carry the run elapsed time and commit hash. The duration of a resumed run includes time between invocations.
+
+Logs exclude transcript text, fact bodies, commit-message text, gap explanations, command argument dumps and credentials. Operational identifiers such as transcript filenames remain local. Log output never alters stdout, so chunk reading and JSON consumers keep their existing contracts. `status`/`progress` and export `--dry-run` remain read-only. No automatic log deletion or remote upload occurs.
+
+```sh
+# Show the most recent execution events; filename date is UTC.
+tail -n 30 "$WIKI_HOME/.dream/logs/events-2026-11-10.jsonl"
+wiki dream progress  # includes the event log location
+```
+
+A `started` event without a terminal event means no completion event was recorded; it does not prove a hang. Compare timestamps with the scheduler deadline and transport errors. A gap between chunk emission and acknowledgement includes review, model and transport time; the log cannot attribute that gap to one cause.
+
+For a 60-minute scheduler limit, stop starting new transcripts at elapsed minute 50 and reserve the final 10 minutes for progress, verification and a partial commit. This is caller guidance, not an internal timer: configure the scheduler's hard deadline and caller instructions together. The package never changes scheduler settings itself.
