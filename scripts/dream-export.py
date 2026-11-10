@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -159,6 +160,12 @@ def main() -> int:
     args = ap.parse_args()
     try:
         root = os.path.realpath(os.path.expanduser(args.content_root))
+        workflow_state = os.path.join(root, ".dream", "workflow.json")
+        if os.path.isfile(workflow_state):
+            with open(workflow_state, encoding="utf-8") as state_file:
+                workflow = json.load(state_file)
+            if workflow.get("phase") != "success":
+                raise ValueError("an incomplete run must be resumed before exporting another batch")
         source = "input" if args.input else "alma"
         if args.since:
             since_dt = parse_stamp(args.since)
@@ -186,30 +193,35 @@ def main() -> int:
             name = f"{t['id']}.txt" if not title or title == t["id"] else f"{t['id']}-{slugify(title)}.txt"
             plan.append((t["id"], name, render(t, args.tool_result_chars)))
         total = sum(len(body) for _, _, body in plan)
-        print(f"threads: {len(plan)}  since: {since_dt.date()}  bytes: {total}")
-        for _, name, body in plan: print(f"  {name}  {len(body)}B")
+        source_boundary = since_dt.isoformat()
+        source_hash = hashlib.sha256(json.dumps(chosen, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        batch_id = hashlib.sha256(f"{source}\0{source_hash}".encode()).hexdigest()[:20]
+        print(f"threads: {len(plan)}  since: {since_dt.date()}  characters: {total}")
+        for _, name, body in plan: print(f"  {name}  {len(body)} characters")
         if args.dry_run: return 0
-        out_dir = os.path.join(root, ".raw", today)
-        os.makedirs(out_dir, exist_ok=True)
-        destinations = [os.path.join(out_dir, name) for _, name, _ in plan]
-        collisions = [p for p in destinations if os.path.exists(p)]
-        if collisions:
-            raise ValueError("frozen export exists; refusing overwrite: " + ", ".join(collisions))
-        # Stage every output before publishing the immutable batch.
-        staged = []
+        base = os.path.join(root, ".raw", today)
+        os.makedirs(base, exist_ok=True)
+        out_dir = os.path.join(base, batch_id)
+        if os.path.exists(out_dir):
+            manifest = os.path.join(out_dir, "manifest.json")
+            if os.path.isfile(manifest):
+                print(f"wrote {out_dir} (existing immutable batch)")
+                return 0
+            raise ValueError(f"incomplete publication staging exists: {out_dir}")
+        staging = tempfile.mkdtemp(prefix=f".dream-stage-{batch_id}-", dir=base)
         try:
-            for tid, name, body in plan:
-                fd, tmp = tempfile.mkstemp(prefix=".dream-stage-", dir=out_dir)
-                with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(body)
-                staged.append((tid, name, tmp))
-            for tid, name, tmp in staged:
-                destination = os.path.join(out_dir, name)
-                if os.path.exists(destination):
-                    raise ValueError(f"frozen export already exists: {destination}; choose a new content root or batch date")
-                os.replace(tmp, destination)
+            for _, name, body in plan:
+                with open(os.path.join(staging, name), "w", encoding="utf-8") as output:
+                    output.write(body)
+            metadata = {"batch_id": batch_id, "source": source, "source_boundary": source_boundary, "source_hash": source_hash, "selected_at": dt.datetime.now(dt.timezone.utc).isoformat(), "transcripts": [name for _, name, _ in plan]}
+            with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as output:
+                json.dump(metadata, output, indent=2, sort_keys=True)
+                output.write("\n")
+            os.replace(staging, out_dir)
         finally:
-            for _, _, tmp in staged:
-                if os.path.exists(tmp): os.remove(tmp)
+            if os.path.isdir(staging):
+                import shutil
+                shutil.rmtree(staging)
         print(f"wrote {out_dir}")
         return 0
     except (ValueError, OSError, json.JSONDecodeError, RuntimeError) as exc:

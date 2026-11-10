@@ -52,7 +52,7 @@ class DreamExportTests(unittest.TestCase):
             result = subprocess.run(["bash", str(WIKI), "dream", "export", *args], input=json.dumps(data) if stdin else None, env=self.env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((self.root / ".dream" / "last-run-input").exists(), "export is not processed success")
-        transcript = next((self.root / ".raw").glob("*/t-one-example.txt")).read_text()
+        transcript = next((self.root / ".raw").glob("*/*/t-one-example.txt")).read_text()
         self.assertEqual(transcript.count("USER [id=u; timestamp=2026-11-09T10:00:00+02:00; timezone=Europe/Paris]"), 1)
         self.assertIn("ASSISTANT [id=a]:", transcript)
         self.assertIn("TOOL RESULT (Bash):\n0", transcript)
@@ -109,11 +109,11 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         file = self.write_input(self.sample())
         first = self.run_wiki("--input", str(file))
         self.assertEqual(first.returncode, 0, first.stderr)
-        output = next((self.root / ".raw").glob("*/*.txt"))
+        output = next((self.root / ".raw").glob("*/*/*.txt"))
         original = output.read_bytes()
         retry = self.run_wiki("--input", str(file))
-        self.assertNotEqual(retry.returncode, 0)
-        self.assertIn("refusing overwrite", retry.stderr)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn("existing immutable batch", retry.stdout)
         self.assertEqual(output.read_bytes(), original)
 
     def test_dry_run_writes_nothing(self):
@@ -130,13 +130,13 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         file = self.write_input(data)
         result = self.run_wiki("--input", str(file), "--since", "2026-01-01")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(list((self.root / ".raw").glob("*/*.txt"))), 1)
+        self.assertEqual(len(list((self.root / ".raw").glob("*/*/*.txt"))), 1)
         other = Path(self.tmp.name) / "selected"
         other.mkdir()
         env = dict(self.env, WIKI_HOME=str(other))
         result = subprocess.run(["bash", str(WIKI), "dream", "export", "--input", str(file), "--thread", "t-old"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([p.name for p in (other / ".raw").glob("*/*.txt")], ["t-old-example.txt"])
+        self.assertEqual([p.name for p in (other / ".raw").glob("*/*/*.txt")], ["t-old-example.txt"])
 
     def test_visible_truncation_markers(self):
         data = self.sample()
@@ -144,7 +144,7 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         file = self.write_input(data)
         result = self.run_wiki("--input", str(file))
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = next((self.root / ".raw").glob("*/*.txt")).read_text()
+        text = next((self.root / ".raw").glob("*/*/*.txt")).read_text()
         self.assertIn("thread truncated", text)
         data["threads"][0]["messages"] = [{"role": "user", "content": "y" * 5000}]
         file = self.write_input(data)
@@ -152,7 +152,7 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         second.mkdir()
         result = subprocess.run(["bash", str(WIKI), "dream", "export", "--content-root", str(second), "--input", str(file)], env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = next((second / ".raw").glob("*/*.txt")).read_text()
+        text = next((second / ".raw").glob("*/*/*.txt")).read_text()
         self.assertIn("chars cut", text)
 
     def test_explicit_alma_source_paginates(self):
@@ -175,7 +175,7 @@ elif a[0:2]==['thread','messages']:
         calls = log.read_text()
         self.assertIn("--offset 0", calls)
         self.assertIn("--offset 1", calls)
-        text = next((self.root / ".raw").glob("*/*.txt")).read_text()
+        text = next((self.root / ".raw").glob("*/*/*.txt")).read_text()
         self.assertIn("2026-11-09T11:00:00Z", text)
 
     def test_alma_metadata_sent_at_timezone_is_preserved(self):
@@ -190,7 +190,7 @@ elif a[0:2]==['thread','messages']:
         alma.chmod(0o755)
         result = self.run_wiki("--source", "alma", "--thread", "observed-shape", path=bindir)
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = next((self.root / ".raw").glob("*/*.txt")).read_text()
+        text = next((self.root / ".raw").glob("*/*/*.txt")).read_text()
         self.assertIn("timestamp=2026-11-09T05:53:46.632Z", text)
         self.assertIn("timezone=Asia/Hong_Kong", text)
 
@@ -213,7 +213,7 @@ elif a[0:2]==['thread','messages']:
         file = self.write_input(data)
         result = self.run_wiki("--input", str(file), "--since", "2026-11-09")
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = next((self.root / ".raw").glob("*/*.txt")).read_text()
+        text = next((self.root / ".raw").glob("*/*/*.txt")).read_text()
         self.assertIn("ASSISTANT [id=tool-msg; timestamp=2026-11-09T11:00:00Z; timezone=UTC]:", text)
         self.assertIn("TOOL CALL Bash:", text)
 
@@ -228,7 +228,7 @@ elif a[0:2]==['thread','messages']:
         ]
         result = self.run_wiki("--input", str(self.write_input(data)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        names = {p.name for p in (self.root / ".raw").glob("*/*.txt")}
+        names = {p.name for p in (self.root / ".raw").glob("*/*/*.txt")}
         self.assertIn("fresh-example.txt", names)
         self.assertNotIn("old-example.txt", names)
 

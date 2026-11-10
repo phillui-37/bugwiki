@@ -76,14 +76,15 @@ Never write a credential. Refer to it by name ("the deploy token").
 ## The dream (nightly pass)
 
 The dream is a **means**: its output lands in this same wiki as `facts/` pages,
-not in a separate store. Three parts, and only one of them is an agent:
+not in a separate store. Export, manifest-led review, and verified commit form the workflow; analysis is the agent step:
 
 ```bash
-wiki dream export --input threads.json # 1. canonical JSON -> .raw/<date>/*.txt
-# Or: wiki dream export --input - < threads.json
-# Alma is optional and explicit: wiki dream export --source alma --since 2026-11-06
-# 2. analysis: one transcript at a time -> facts/*.md   (this is you, per §Dream method)
-wiki dream commit                      # 3. one git commit + one line in reports/<date>.dream.md
+wiki dream export --input threads.json # publish immutable manifest-backed batch
+wiki dream begin --batch "$WIKI_HOME/.raw/<date>/<batch-id>"
+wiki dream progress                    # resume the active manifest
+# read -> review -> ack each chunk; complete each transcript
+# own only new facts/*.md or solutions/*.md created by this run
+wiki dream commit                      # verify, report, commit, and receipt
 ```
 
 `dream export` renders text and tool calls/results; it does not invoke a model.

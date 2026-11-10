@@ -598,13 +598,17 @@ cmd_dream() {
   local sub="${1:-status}"
   shift 2>/dev/null || true
   case "$sub" in
-    begin|progress|status|read|ack|complete|own|commit)
+    begin|progress|read|ack|complete|own|resolve|commit)
       local workflow
       workflow="$(cd -P "$(dirname "$_src")" && pwd)/dream-workflow.py"
       [ -f "$workflow" ] || die "missing $workflow"
-      local action="$sub"; [ "$sub" != "begin" ] || action="begin"
+      local action="$sub"
       if [ "$action" = progress ]; then action=status; fi
       python3 "$workflow" --root "$WIKI" "$action" "$@" ;;
+    status)
+      local workflow
+      workflow="$(cd -P "$(dirname "$_src")" && pwd)/dream-workflow.py"
+      python3 "$workflow" --root "$WIKI" status ;;
     export)
       # resolve next to the running script: this CLI lives in bin/ in a dev
       # checkout and in scripts/ once installed as a skill, and hardcoding
@@ -613,46 +617,7 @@ cmd_dream() {
       helper="$(cd -P "$(dirname "$_src")" && pwd)/dream-export.py"
       [ -x "$helper" ] || die "missing $helper"
       "$helper" --content-root "$WIKI" "$@" ;;
-    status)
-      local state="$WIKI/.dream/last-run" source_state found=0
-      printf 'content root: %s\n' "$WIKI"
-      for source_state in "$WIKI"/.dream/last-run-*; do
-        [ -f "$source_state" ] || continue
-        found=1
-        printf 'checkpoint (%s): %s\n' "${source_state##*-}" "$(cat "$source_state")"
-      done
-      [ "$found" -eq 1 ] || printf 'checkpoints:   never\n'
-      [ -f "$state" ] && printf 'legacy checkpoint (last-run): %s\n' "$(cat "$state")"
-      printf 'raw dirs:     %s\n' "$(find "$WIKI/.raw" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-      printf 'facts:        %s\n' "$(find "$WIKI/facts" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
-      if [ -d "$WIKI/.git" ]; then
-        printf 'git:          %s uncommitted change(s)\n' "$(git -C "$WIKI" status --porcelain | wc -l | tr -d ' ')"
-      else
-        printf 'git:          NOT A REPO — dream writes are not reversible until this is fixed\n'
-      fi
-      return 0 ;;
-    commit)
-      [ -d "$WIKI/.git" ] || die "not a git repo: $WIKI (run: git init there first; dream writes must be revertable)"
-      local msg="" added modified
-      while [ $# -gt 0 ]; do
-        case "$1" in -m) msg="$2"; shift 2 ;; *) shift ;; esac
-      done
-      git -C "$WIKI" add -A
-      # count files, not porcelain entries: an untracked facts/ collapses to one line
-      added="$(git -C "$WIKI" diff --cached --name-status | grep -c '^A' || true)"
-      modified="$(git -C "$WIKI" diff --cached --name-status | grep -c '^M' || true)"
-      [ "$((added + modified))" -gt 0 ] || { printf 'nothing to commit\n'; return 0; }
-      [ -n "$msg" ] || msg="dream $TODAY: ${added} new, ${modified} changed"
-      # its own file, and written before the commit so it belongs to the run it
-      # describes: housekeep rewrites reports/<date>.md wholesale, this one it
-      # never touches.
-      mkdir -p "$WIKI/reports"
-      printf '%s | %s\n' "$(date +%H:%M)" "$msg" >> "$WIKI/reports/$TODAY.dream.md"
-      git -C "$WIKI" add "$WIKI/reports/$TODAY.dream.md"
-      git -C "$WIKI" commit -q -m "$msg"
-      printf 'committed: %s\n' "$msg"
-      return 0 ;;
-    *) die "usage: wiki dream <export|status|commit> [--since D] [--dry-run] [-m msg]" ;;
+    *) die "usage: wiki dream <export|begin|progress|read|ack|complete|own|resolve|commit|status> [options]" ;;
   esac
 }
 
