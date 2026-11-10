@@ -166,6 +166,41 @@ def main() -> int:
                 workflow = json.load(state_file)
             if workflow.get("phase") != "success":
                 raise ValueError("an incomplete run must be resumed before exporting another batch")
+        # Recover publication even if the process stopped before begin/pointer write.
+        # Only manifest-backed batches created by this workflow participate.
+        from pathlib import Path
+        pending = []
+        for manifest_path in sorted(Path(root, ".raw").glob("*/*/manifest.json")):
+            if manifest_path.parent.name.startswith(".dream-stage-"):
+                continue
+            metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if Path(root, ".dream", "processed-batches", metadata["batch_id"] + ".json").exists():
+                continue
+            names = metadata["transcripts"]
+            valid = (manifest_path.parent.name == metadata["batch_id"]
+                     and set(names) == set(metadata["transcript_hashes"])
+                     and len(set(names)) == len(names)
+                     and set(p.name for p in manifest_path.parent.iterdir()) == set(names) | {"manifest.json"})
+            for name in names:
+                path = manifest_path.parent / name
+                if Path(name).name != name or path.is_symlink() or not path.is_file():
+                    valid = False
+                    break
+                if hashlib.sha256(path.read_bytes()).hexdigest() != metadata["transcript_hashes"][name]:
+                    valid = False
+            if not valid:
+                raise ValueError(f"existing immutable batch failed verification: {manifest_path.parent}")
+            pending.append((manifest_path.parent, metadata))
+        if pending:
+            if len(pending) != 1:
+                raise ValueError("multiple unpublished batches need explicit reconciliation")
+            directory, metadata = pending[0]
+            if not args.dry_run:
+                os.makedirs(os.path.join(root, ".dream"), exist_ok=True)
+                atomic_write(os.path.join(root, ".dream", "pending-batch.json"),
+                             json.dumps({"batch_id": metadata["batch_id"], "path": os.path.relpath(directory, root)}) + "\n")
+            print(f"resume {directory} (existing immutable batch; source selection was not rerun)")
+            return 0
         source = "input" if args.input else "alma"
         if args.since:
             since_dt = parse_stamp(args.since)
@@ -174,7 +209,12 @@ def main() -> int:
             state = os.path.join(root, ".dream", f"last-run-{source}")
             since_dt = parse_stamp(open(state, encoding="utf-8").read()) if os.path.exists(state) else None
             since_dt = since_dt - dt.timedelta(minutes=30) if since_dt else dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
+        selected_at = dt.datetime.now(dt.timezone.utc)
         threads, source = load_threads(args, since_dt)
+        ids = [t["id"] for t in threads]
+        duplicates = sorted({tid for tid in ids if ids.count(tid) > 1})
+        if duplicates:
+            raise ValueError("duplicate thread id: " + ", ".join(duplicates))
         if args.thread:
             by_id = {t["id"]: t for t in threads}
             missing = [tid for tid in args.thread if tid not in by_id]
@@ -193,38 +233,84 @@ def main() -> int:
             name = f"{t['id']}.txt" if not title or title == t["id"] else f"{t['id']}-{slugify(title)}.txt"
             plan.append((t["id"], name, render(t, args.tool_result_chars)))
         total = sum(len(body) for _, _, body in plan)
-        source_boundary = since_dt.isoformat()
+        source_boundary = selected_at.isoformat()
         source_hash = hashlib.sha256(json.dumps(chosen, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        batch_id = hashlib.sha256(f"{source}\0{source_hash}".encode()).hexdigest()[:20]
+        render_settings = {"user_chars": USER_CHARS, "agent_chars": AGENT_CHARS,
+                           "tool_input_chars": TOOL_INPUT_CHARS,
+                           "tool_result_chars": args.tool_result_chars,
+                           "max_thread_chars": MAX_THREAD_CHARS}
+        advances_watermark = source == "alma" and not args.thread
+        identity = json.dumps({"source": source, "source_hash": source_hash,
+                               "render_settings": render_settings, "advances_watermark": advances_watermark}, sort_keys=True)
+        batch_id = hashlib.sha256(identity.encode()).hexdigest()[:20]
         print(f"threads: {len(plan)}  since: {since_dt.date()}  characters: {total}")
         for _, name, body in plan: print(f"  {name}  {len(body)} characters")
         if args.dry_run: return 0
-        base = os.path.join(root, ".raw", today)
+        raw_root = os.path.join(root, ".raw")
+        os.makedirs(raw_root, exist_ok=True)
+        out_dir = None
+        for parent, dirs, _ in os.walk(raw_root):
+            if batch_id in dirs:
+                candidate = os.path.join(parent, batch_id)
+                manifest_path = os.path.join(candidate, "manifest.json")
+                expected_hashes = {name: hashlib.sha256(body.encode("utf-8")).hexdigest()
+                                   for _, name, body in plan}
+                expected = {"batch_id": batch_id, "source": source,
+                            "source_hash": source_hash, "render_settings": render_settings,
+                            "transcripts": [name for _, name, _ in plan],
+                            "transcript_hashes": expected_hashes,
+                            "advances_watermark": advances_watermark}
+                try:
+                    existing = json.loads(open(manifest_path, encoding="utf-8").read())
+                    actual_names = set(os.listdir(candidate))
+                    expected_names = set(expected["transcripts"]) | {"manifest.json"}
+                    metadata_fields = set(expected) | {"source_boundary", "since", "selected_at"}
+                    valid = (set(existing) == metadata_fields
+                             and all(existing.get(k) == v for k, v in expected.items())
+                             and existing.get("source_boundary") == existing.get("selected_at")
+                             and parse_stamp(existing.get("source_boundary")) is not None
+                             and parse_stamp(existing.get("since")) is not None
+                             and actual_names == expected_names)
+                    valid = valid and all(hashlib.sha256(open(os.path.join(candidate, n), "rb").read()).hexdigest() == h for n, h in expected_hashes.items())
+                except (OSError, ValueError):
+                    valid = False
+                if not valid:
+                    raise ValueError(f"existing immutable batch failed verification: {candidate}")
+                out_dir = candidate
+                break
+        base = os.path.join(raw_root, today)
         os.makedirs(base, exist_ok=True)
-        out_dir = os.path.join(base, batch_id)
-        if os.path.exists(out_dir):
-            manifest = os.path.join(out_dir, "manifest.json")
-            if os.path.isfile(manifest):
-                print(f"wrote {out_dir} (existing immutable batch)")
-                return 0
-            raise ValueError(f"incomplete publication staging exists: {out_dir}")
-        staging = tempfile.mkdtemp(prefix=f".dream-stage-{batch_id}-", dir=base)
-        try:
-            for _, name, body in plan:
-                with open(os.path.join(staging, name), "w", encoding="utf-8") as output:
-                    output.write(body)
-            metadata = {"batch_id": batch_id, "source": source, "source_boundary": source_boundary, "source_hash": source_hash, "selected_at": dt.datetime.now(dt.timezone.utc).isoformat(), "transcripts": [name for _, name, _ in plan]}
-            with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as output:
-                json.dump(metadata, output, indent=2, sort_keys=True)
-                output.write("\n")
-            os.replace(staging, out_dir)
-        finally:
-            if os.path.isdir(staging):
-                import shutil
-                shutil.rmtree(staging)
-        print(f"wrote {out_dir}")
+        if out_dir is None:
+            out_dir = os.path.join(base, batch_id)
+            if os.path.exists(out_dir):
+                raise ValueError(f"incomplete publication staging exists: {out_dir}")
+        if os.path.basename(os.path.dirname(out_dir)) == today and not os.path.exists(os.path.join(out_dir, "manifest.json")):
+            staging = tempfile.mkdtemp(prefix=f".dream-stage-{batch_id}-", dir=base)
+            try:
+                for _, name, body in plan:
+                    with open(os.path.join(staging, name), "w", encoding="utf-8") as output:
+                        output.write(body)
+                metadata = {"batch_id": batch_id, "source": source, "source_boundary": source_boundary,
+                            "since": since_dt.isoformat(), "selected_at": source_boundary,
+                            "source_hash": source_hash, "render_settings": render_settings,
+                            "transcripts": [name for _, name, _ in plan],
+                            "transcript_hashes": {name: hashlib.sha256(body.encode("utf-8")).hexdigest() for _, name, body in plan},
+                            "advances_watermark": advances_watermark}
+                with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as output:
+                    json.dump(metadata, output, indent=2, sort_keys=True)
+                    output.write("\n")
+                os.replace(staging, out_dir)
+            finally:
+                if os.path.isdir(staging):
+                    import shutil
+                    shutil.rmtree(staging)
+        if not args.dry_run:
+            pointer = os.path.join(root, ".dream", "pending-batch.json")
+            os.makedirs(os.path.dirname(pointer), exist_ok=True)
+            atomic_write(pointer, json.dumps({"batch_id": batch_id, "path": os.path.relpath(out_dir, root)}, sort_keys=True, indent=2) + "\n")
+        print(f"wrote {out_dir}" + (" (existing immutable batch)" if os.path.exists(os.path.join(out_dir, "manifest.json")) else ""))
         return 0
-    except (ValueError, OSError, json.JSONDecodeError, RuntimeError) as exc:
+    except (ValueError, OSError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"dream export: {exc}", file=sys.stderr)
         return 1
 

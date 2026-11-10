@@ -1,5 +1,6 @@
 """Public CLI regressions for resumable dream processing and publication."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -28,7 +29,7 @@ class DreamWorkflowCLI(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "base"], check=True)
         self.transcript = self.root / ".raw" / "batch" / "t.txt"
         self.transcript.write_text("transcript body\n")
-        manifest = {"batch_id": "batch-one", "source": "input", "source_boundary": "2026-11-10T00:00:00+00:00", "source_hash": "abc", "transcripts": ["t.txt"]}
+        manifest = {"batch_id": "batch-one", "source": "input", "source_boundary": "2026-11-10T00:00:00+00:00", "source_hash": "abc", "transcripts": ["t.txt"], "transcript_hashes": {"t.txt": hashlib.sha256(self.transcript.read_bytes()).hexdigest()}, "advances_watermark": False}
         (self.transcript.parent / "manifest.json").write_text(json.dumps(manifest))
 
     def tearDown(self):
@@ -45,6 +46,7 @@ class DreamWorkflowCLI(unittest.TestCase):
     def finish_transcript(self, gaps=""):
         path = str(self.transcript)
         first = self.cli("read", "--thread", path, "--limit", "5")
+        self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(first.stdout, "trans")
         self.assertEqual(self.cli("ack", "--thread", path).returncode, 0)
         remainder = self.cli("read", "--thread", path)
@@ -59,7 +61,7 @@ class DreamWorkflowCLI(unittest.TestCase):
     def own_fact(self, rel="facts/known.md"):
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("---\nsource: thread-1\nstatus: open\n---\n\nA reviewed fact.\n")
+        path.write_text("---\ntitle: Known fact\nrecurrence: 1\nsource: thread-1\nstatus: open\n---\n\n" + "This evidence comes from the identified transcript and records the verified scope of the operational observation. " * 4 + "\n")
         result = self.cli("own", input=rel + "\n")
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -68,6 +70,7 @@ class DreamWorkflowCLI(unittest.TestCase):
         args = ("read", "--thread", str(self.transcript), "--limit", "5")
         first = self.cli(*args)
         again = self.cli(*args)
+        self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(first.stdout, "trans")
         self.assertEqual(again.stdout, first.stdout)
         self.assertNotEqual(self.cli("read", "--thread", str(self.transcript), "--limit", "999999").returncode, 0)
@@ -83,6 +86,7 @@ class DreamWorkflowCLI(unittest.TestCase):
 
     def test_scope_traversal_readme_and_promoted_paths_rejected(self):
         self.begin()
+        (self.root / "facts" / "promoted.md").write_text("---\nmaturity: 'promoted'\n---\nKeep this.\n")
         for rel in ("README.md", "facts/../README.md", "facts/promoted.md", "AGENTS.md", ".dream/config.md"):
             result = self.cli("own", input=rel + "\n")
             self.assertNotEqual(result.returncode, 0, rel)
@@ -169,19 +173,20 @@ class DreamWorkflowCLI(unittest.TestCase):
 
     def test_skipped_transcript_has_reason_and_is_reported(self):
         self.begin()
-        result = self.cli("complete", "--thread", str(self.transcript), "--status", "skipped", "--gaps", "dream job transcript excluded")
+        result = self.cli("complete", "--thread", str(self.transcript), "--status", "skipped", "--reason", "dream job transcript excluded")
         self.assertEqual(result.returncode, 0, result.stderr)
         committed = self.cli("commit")
         self.assertEqual(committed.returncode, 0, committed.stderr + committed.stdout)
         report = next((self.root / "reports").glob("*.dream.md")).read_text()
         self.assertIn("Skipped: 1", report)
         self.assertIn("dream job transcript excluded", report)
-        self.assertIn("Unresolved gaps: 1", report)
+        self.assertIn("Unresolved gaps: 0", report)
 
     def test_source_watermark_advances_to_captured_boundary_after_commit(self):
         manifest_path = self.transcript.parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["source"] = "alma"
+        manifest["advances_watermark"] = True
         manifest["source_boundary"] = "2026-11-09T12:00:00+00:00"
         manifest_path.write_text(json.dumps(manifest))
         self.begin()
@@ -201,6 +206,194 @@ class DreamWorkflowCLI(unittest.TestCase):
         result = self.cli("complete", "--thread", str(self.transcript), "--status", "analyzed")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unread or unacknowledged", result.stderr)
+
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.root), *args], text=True)
+
+    def state(self):
+        return json.loads((self.root / ".dream" / "workflow.json").read_text())
+
+    def test_unrelated_index_blobs_modes_and_deletion_are_preserved(self):
+        for name in ("remove.md", "staged.sh", "unstaged.md"):
+            (self.root / name).write_text("baseline\n")
+        self.git("add", "remove.md", "staged.sh", "unstaged.md")
+        self.git("commit", "-qm", "unrelated baseline")
+        self.git("rm", "remove.md")
+        staged = self.root / "staged.sh"
+        staged.write_text("staged bytes\n")
+        staged.chmod(0o755)
+        self.git("add", "staged.sh")
+        staged.write_text("later unstaged bytes\n")
+        (self.root / "unstaged.md").write_text("unstaged bytes\n")
+        unrelated = ["remove.md", "staged.sh", "unstaged.md", "README.md"]
+        index_before = self.git("ls-files", "--stage", "-z", "--", *unrelated)
+        diff_before = self.git("diff", "--cached", "--binary", "--", *unrelated)
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("ls-files", "--stage", "-z", "--", *unrelated), index_before)
+        self.assertEqual(self.git("diff", "--cached", "--binary", "--", *unrelated), diff_before)
+        self.assertEqual(staged.read_text(), "later unstaged bytes\n")
+        self.assertEqual((self.root / "unstaged.md").read_text(), "unstaged bytes\n")
+        self.assertFalse((self.root / "remove.md").exists())
+        owned = ["facts/known.md", self.state()["report"]]
+        self.assertEqual(self.git("status", "--porcelain", "--", *owned), "")
+        self.assertEqual(set(self.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines()), set(owned))
+
+    def test_normal_owned_index_reconciles_after_head_advanced_before_receipt(self):
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state()
+        parent = state["prepared"]["parent"]
+        self.git("reset", "-q", parent, "--", *state["prepared"]["paths"])
+        state["phase"] = "committing"
+        (self.root / ".dream" / "workflow.json").write_text(json.dumps(state))
+        retried = self.cli("commit")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.git("status", "--porcelain", "--", *state["prepared"]["paths"]), "")
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), state["prepared"]["commit"])
+
+    def test_crash_before_ref_publication_reuses_prepared_commit(self):
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state()
+        prepared = state["prepared"]
+        self.git("update-ref", "HEAD", prepared["parent"], prepared["commit"])
+        self.git("reset", "-q", prepared["parent"], "--", *prepared["paths"])
+        state["phase"] = "committing"
+        (self.root / ".dream" / "workflow.json").write_text(json.dumps(state))
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), prepared["commit"])
+
+    def test_other_commit_with_same_paths_is_not_adopted(self):
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        self.assertEqual(self.cli("commit").returncode, 0)
+        state = self.state()
+        prepared = state["prepared"]
+        self.git("update-ref", "HEAD", prepared["parent"], prepared["commit"])
+        # A different commit with the same parent and files was accepted by the old recovery code.
+        other = self.git("commit-tree", prepared["tree"], "-p", prepared["parent"], "-m", "unrelated transaction").strip()
+        self.git("update-ref", "HEAD", other, prepared["parent"])
+        state["phase"] = "committing"
+        (self.root / ".dream" / "workflow.json").write_text(json.dumps(state))
+        result = self.cli("commit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HEAD moved", result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), other)
+
+    def test_success_retry_repairs_missing_derived_metadata_even_with_receipt(self):
+        manifest_path = self.transcript.parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(source="alma", advances_watermark=True)
+        manifest_path.write_text(json.dumps(manifest))
+        self.begin()
+        self.finish_transcript()
+        self.assertEqual(self.cli("commit").returncode, 0)
+        (self.root / ".dream" / "processed-batches" / "batch-one.json").unlink()
+        (self.root / ".dream" / "last-run-alma").unlink()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / ".dream" / "last-run-alma").read_text(), manifest["source_boundary"] + "\n")
+        self.assertTrue((self.root / ".dream" / "processed-batches" / "batch-one.json").exists())
+
+    def test_partial_unread_run_can_resume_and_preserves_both_receipts(self):
+        self.begin()
+        self.assertNotEqual(self.cli("commit").returncode, 0)
+        partial = self.cli("commit", "--partial")
+        self.assertEqual(partial.returncode, 0, partial.stderr)
+        self.assertEqual(self.state()["phase"], "partial")
+        partial_commit = self.state()["commit"]
+        self.finish_transcript()
+        final = self.cli("commit")
+        self.assertEqual(final.returncode, 0, final.stderr)
+        state = self.state()
+        self.assertEqual(state["phase"], "success")
+        self.assertNotEqual(state["commit"], partial_commit)
+        for commit in (partial_commit, state["commit"]):
+            self.assertTrue((self.root / ".dream" / "receipts" / f"{state['id']}-{commit}.json").exists())
+
+    def test_failed_verify_can_be_repaired_with_explicit_hash_amend(self):
+        self.begin()
+        self.finish_transcript()
+        fact = self.root / "facts" / "fix.md"
+        fact.write_text("---\ntitle: Repaired fact\nrecurrence: 1\nstatus: invalid\nsource: thread-1\n---\n" + "The evidence and its limitations are retained for verification against the original source. " * 4)
+        self.assertEqual(self.cli("own", input="facts/fix.md\n").returncode, 0)
+        old_hash = self.state()["owned"]["facts/fix.md"]
+        self.assertNotEqual(self.cli("commit").returncode, 0)
+        fact.write_text(fact.read_text().replace("status: invalid", "status: open"))
+        self.assertNotEqual(self.cli("own", input="facts/fix.md\n").returncode, 0)
+        self.assertNotEqual(self.cli("amend", "--path", "facts/fix.md", "--expected-hash", "wrong").returncode, 0)
+        amendment = self.cli("amend", "--path", "facts/fix.md", "--expected-hash", old_hash)
+        self.assertEqual(amendment.returncode, 0, amendment.stderr)
+        committed = self.cli("commit")
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+
+    def test_manifest_hashes_and_inventory_reject_changed_export_before_begin(self):
+        self.transcript.write_text("tampered before begin")
+        self.assertNotEqual(self.cli("begin", "--batch", str(self.transcript.parent)).returncode, 0)
+
+    def test_skip_requires_explicit_reason_instead_of_inventing_dream_topic(self):
+        self.begin()
+        result = self.cli("complete", "--thread", str(self.transcript), "--status", "skipped")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state()["transcripts"][str(self.transcript)]["analysis"], "pending")
+
+    def test_unicode_offsets_and_unacknowledged_replay_do_not_skip_content(self):
+        content = "廣東話😀\n" * 10
+        self.transcript.write_text(content)
+        metadata_path = self.transcript.parent / "manifest.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["transcript_hashes"]["t.txt"] = hashlib.sha256(self.transcript.read_bytes()).hexdigest()
+        metadata_path.write_text(json.dumps(metadata))
+        self.begin()
+        read = self.cli("read", "--thread", str(self.transcript), "--limit", "4")
+        self.assertEqual(read.stdout, content[:4])
+        replay = self.cli("read", "--thread", str(self.transcript), "--limit", "100")
+        self.assertEqual(replay.stdout, read.stdout)
+        self.assertEqual(self.cli("ack", "--thread", str(self.transcript)).returncode, 0)
+        self.assertEqual(self.state()["transcripts"][str(self.transcript)]["ack"], 4)
+        self.assertNotEqual(self.cli("read", "--thread", str(self.transcript), "--offset", "5").returncode, 0)
+
+    def test_zero_transcript_batch_gets_a_verified_no_fact_report(self):
+        self.transcript.unlink()
+        metadata_path = self.transcript.parent / "manifest.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update(transcripts=[], transcript_hashes={})
+        metadata_path.write_text(json.dumps(metadata))
+        self.begin()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = (self.root / self.state()["report"]).read_text()
+        self.assertIn("Analyzed: 0", report)
+        self.assertIn("Owned fact/solution files: 0", report)
+
+
+
+    def test_first_dream_can_commit_to_an_unborn_wiki_branch(self):
+        import shutil
+        shutil.rmtree(self.root / ".git")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.invalid")
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        result = self.cli("commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-list", "--count", "HEAD").strip(), "1")
+        self.assertEqual(self.git("status", "--porcelain", "--", "facts/known.md", self.state()["report"]), "")
 
 
 if __name__ == "__main__":

@@ -116,6 +116,45 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         self.assertIn("existing immutable batch", retry.stdout)
         self.assertEqual(output.read_bytes(), original)
 
+    def test_manifest_boundary_is_captured_upper_bound_and_not_since(self):
+        file = self.write_input(self.sample())
+        started = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        result = self.run_wiki("--input", str(file), "--since", "2001-01-01T00:00:00Z")
+        ended = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads(next((self.root / ".raw").glob("*/*/manifest.json")).read_text())
+        import datetime as dt
+        boundary = dt.datetime.fromisoformat(manifest["source_boundary"])
+        self.assertGreaterEqual(boundary, started)
+        self.assertLessEqual(boundary, ended)
+        self.assertEqual(manifest["selected_at"], manifest["source_boundary"])
+        self.assertEqual(manifest["since"], "2001-01-01T00:00:00+00:00")
+        self.assertFalse(manifest["advances_watermark"])
+        self.assertIn("t-one-example.txt", manifest["transcript_hashes"])
+        self.assertTrue((self.root / ".dream" / "pending-batch.json").exists())
+
+    def test_forced_thread_does_not_advance_watermark_and_duplicates_rejected(self):
+        file = self.write_input(self.sample())
+        result = self.run_wiki("--input", str(file), "--thread", "t-one")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads(next((self.root / ".raw").glob("*/*/manifest.json")).read_text())
+        self.assertFalse(manifest["advances_watermark"])
+        duplicate = self.write_input({"threads": self.sample()["threads"] * 2})
+        second = Path(self.tmp.name) / "duplicate"
+        second.mkdir()
+        result = subprocess.run(["bash", str(WIKI), "dream", "export", "--content-root", str(second), "--input", str(duplicate)], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate thread id", result.stderr)
+
+    def test_retry_detects_tampered_immutable_transcript(self):
+        file = self.write_input(self.sample())
+        self.assertEqual(self.run_wiki("--input", str(file)).returncode, 0)
+        transcript = next((self.root / ".raw").glob("*/*/*.txt"))
+        transcript.write_text("tampered", encoding="utf-8")
+        result = self.run_wiki("--input", str(file))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed verification", result.stderr)
+
     def test_dry_run_writes_nothing(self):
         file = self.write_input(self.sample())
         result = self.run_wiki("--input", str(file), "--dry-run")
@@ -296,6 +335,73 @@ elif a[0:2]==['thread','messages']: print(json.dumps({'messages':[], 'hasMore':F
         result = self.run_wiki("--input", str(self.write_input(self.sample())), "--since", "2026-11-09", path=bindir)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(marker.exists())
+
+
+    def test_publication_interruption_never_exposes_partial_batch_and_retry_recovers(self):
+        source = self.write_input(self.sample())
+        injection = Path(self.tmp.name) / "failure-injection"
+        injection.mkdir()
+        # Inject an actual process death at the atomic publication boundary.
+        (injection / "sitecustomize.py").write_text(
+            "import os\noriginal = os.replace\n"
+            "def replace(src, dst):\n"
+            "    if os.path.isdir(src) and '.dream-stage-' in str(src): os._exit(74)\n"
+            "    return original(src, dst)\n"
+            "os.replace = replace\n")
+        env = dict(self.env, PYTHONPATH=str(injection))
+        failed = subprocess.run(["bash", str(WIKI), "dream", "export", "--input", str(source)], env=env, capture_output=True, text=True)
+        self.assertEqual(failed.returncode, 74, failed.stderr)
+        visible = [p for p in (self.root / ".raw").glob("*/*") if not p.name.startswith(".")]
+        self.assertEqual(visible, [])
+        self.assertFalse((self.root / ".dream" / "pending-batch.json").exists())
+        retry = self.run_wiki("--input", str(source))
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        pointer = json.loads((self.root / ".dream" / "pending-batch.json").read_text())
+        batch = self.root / pointer["path"]
+        self.assertTrue((batch / "manifest.json").exists())
+        # Now simulate death after directory publication but before pointer publication.
+        (self.root / ".dream" / "pending-batch.json").unlink()
+        source.unlink()
+        retry = self.run_wiki("--input", str(source))
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn("source selection was not rerun", retry.stdout)
+        self.assertEqual(json.loads((self.root / ".dream" / "pending-batch.json").read_text())["path"], pointer["path"])
+
+    def test_pending_export_is_resumed_even_if_new_source_input_changes(self):
+        source = self.write_input(self.sample())
+        self.assertEqual(self.run_wiki("--input", str(source)).returncode, 0)
+        pointer = (self.root / ".dream" / "pending-batch.json").read_text()
+        self.write_input({"threads": []})
+        retry = self.run_wiki("--input", str(source))
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn("source selection was not rerun", retry.stdout)
+        self.assertEqual(json.loads((self.root / ".dream" / "pending-batch.json").read_text()), json.loads(pointer))
+
+    def test_real_export_begin_no_fact_commit_moves_automatic_cursor_once(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.invalid"], check=True)
+        (self.root / "README.md").write_text("fixture")
+        subprocess.run(["git", "-C", str(self.root), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "base"], check=True)
+        bindir = Path(self.tmp.name) / "empty-source"
+        bindir.mkdir()
+        (bindir / "alma").write_text("#!/bin/sh\necho '[]'\n")
+        (bindir / "alma").chmod(0o755)
+        exported = self.run_wiki("--source", "alma", "--since", "2020-01-01", path=bindir)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        pointer = json.loads((self.root / ".dream" / "pending-batch.json").read_text())
+        batch = self.root / pointer["path"]
+        manifest = json.loads((batch / "manifest.json").read_text())
+        self.assertTrue(manifest["advances_watermark"])
+        checkpoint = self.root / ".dream" / "last-run-alma"
+        self.assertFalse(checkpoint.exists())
+        for args in (("begin", "--batch", str(batch)), ("commit",)):
+            result = subprocess.run(["bash", str(WIKI), "dream", *args], env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(checkpoint.read_text().strip(), manifest["source_boundary"])
+        self.assertNotEqual(checkpoint.read_text().strip(), manifest["since"])
+        self.assertFalse((self.root / ".dream" / "pending-batch.json").exists())
 
 
 if __name__ == "__main__": unittest.main()

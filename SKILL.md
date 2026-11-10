@@ -20,7 +20,7 @@ wiki stale                   # what is expired or past its per-kind limit
 wiki new <domain> <slug>     |  wiki new fact <slug>
 wiki verify [--migration]    # schema + edge + date check
 wiki lint                    # policy check (statuses, edges, recurrence)
-wiki dream export|status|commit
+wiki dream export|begin|progress|read|ack|complete|own|amend|resolve|commit
 ```
 
 ## Windows
@@ -83,9 +83,11 @@ wiki dream export --input threads.json # publish immutable manifest-backed batch
 wiki dream begin --batch "$WIKI_HOME/.raw/<date>/<batch-id>"
 wiki dream progress                    # resume the active manifest
 # read -> review -> ack each chunk; complete each transcript
-# own only new facts/*.md or solutions/*.md created by this run
+# register only fact/solution changes owned by this run
 wiki dream commit                      # verify, report, commit, and receipt
 ```
+
+Follow [the recovery workflow](docs/dream-recovery.md) for bounded reads, explicit acknowledgements, source gaps, partial commits, and safe retries. Reserve time before the execution deadline to save progress; never label a partial run successful.
 
 `dream export` renders text and tool calls/results; it does not invoke a model.
 Generic callers provide the documented `threads` JSON shape. The optional Alma
