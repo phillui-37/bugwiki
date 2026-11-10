@@ -191,28 +191,8 @@ bash "$WIKI_BIN" index >/dev/null; cp "$TMP/g/README.md" "$TMP/g.r1"
 bash "$WIKI_BIN" index >/dev/null
 if cmp -s "$TMP/g.r1" "$TMP/g/README.md"; then ok "second index run is a no-op"; else bad "second index run is a no-op"; fi
 
-echo "8. dream refuses to write without git"
-seed "$TMP/h"; export WIKI_HOME="$TMP/h"
-printf 'x\n' > "$TMP/h/facts/x.md"
-expect_rc "commit without a repo fails loudly" 1 bash "$WIKI_BIN" dream commit
-
-echo "9. dream commits and records one line"
-( cd "$TMP/h" && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
-printf 'y\n' > "$TMP/h/facts/y.md"
-expect_rc "commit succeeds in a repo" 0 bash "$WIKI_BIN" dream commit
-n="$(git -C "$TMP/h" log --oneline | wc -l | tr -d ' ')"
-expect_eq "one commit per run" "2" "$n"
-mkdir -p "$TMP/h/facts"
-printf 'a\n' > "$TMP/h/facts/c1.md"; printf 'b\n' > "$TMP/h/facts/c2.md"
-bash "$WIKI_BIN" dream commit >/dev/null
-case "$(git -C "$TMP/h" log -1 --pretty=%s)" in
-  *"2 new"*) ok "commit message counts files, not directories" ;;
-  *) bad "commit message counts files, not directories" "$(git -C "$TMP/h" log -1 --pretty=%s)" ;;
-esac
-case "$(ls "$TMP/h/reports" 2>/dev/null)" in
-  *.dream.md) ok "dream line goes to its own report file" ;;
-  *) bad "dream line goes to its own report file" "$(ls "$TMP/h/reports" 2>/dev/null | tr '\n' ' ')" ;;
-esac
+echo "8. resumable dream workflow public CLI regressions"
+if python3 "$PKG/tests/test_dream_workflow.py"; then ok "progress, acknowledgements and scoped commit"; else bad "progress, acknowledgements and scoped commit"; fi
 
 echo "10. find spans both kinds and resolves a cross-kind edge"
 seed "$TMP/j"; export WIKI_HOME="$TMP/j"
@@ -268,8 +248,8 @@ git -C "$WIKI_HOME" config user.email 'bugwiki-test@example.invalid'
 expect_rc "fresh store ignores raw transcripts" 0 git -C "$WIKI_HOME" check-ignore .raw/example.txt
 expect_rc "fresh store can version dream reports" 1 git -C "$WIKI_HOME" check-ignore reports/example.dream.md
 expect_rc "fresh store can version solutions" 1 git -C "$WIKI_HOME" check-ignore solutions/demo/example.md
-expect_rc "fresh store supports dream commit" 0 bash "$WIKI_BIN" dream commit
-expect_eq "dream report is committed" "1" "$(git -C "$WIKI_HOME" ls-files 'reports/*.dream.md' | wc -l | tr -d ' ')"
+expect_rc "commit without a processed manifest is rejected" 1 bash "$WIKI_BIN" dream commit
+expect_eq "no report is fabricated before completion" "0" "$(git -C "$WIKI_HOME" ls-files 'reports/*.dream.md' | wc -l | tr -d ' ')"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
