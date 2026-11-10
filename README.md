@@ -1,12 +1,45 @@
 # bugwiki
 
-A bug-and-fix wiki for coding agents. One markdown page per costly bug: the exact
-symptom, the cause, the fix, the attempts that failed, and the check that proves
-it. Your agent searches it before debugging, so the second agent does not repeat
-the first agent's hour.
+A local Markdown knowledge graph for coding agents. Keep costly bug fixes and
+sourced facts in one searchable store, with typed links, validity dates, and a
+transcript-to-fact workflow called the **dream**.
 
-No database, no daemon, no embeddings service. A directory of markdown files and
-`ripgrep`.
+A solution records the exact symptom, cause, fix, failed attempts, and verification.
+A fact records something now true, its source, and when it stops being current.
+Your agent searches before debugging or acting on remembered state, so the next
+session can reuse the evidence and avoid repeating the work.
+
+No database, daemon, or embeddings service. Files stay local; `ripgrep` handles
+retrieval. The core accepts canonical transcript JSON from any host, with an
+optional explicit Alma adapter. For DeepSeek Harness, use the separate
+[dsh-bugwiki plugin](https://github.com/phillui-37/dsh-bugwiki).
+
+[Install](#install) · [Usage](#usage) · [DSH integration](#deepseek-harness-dsh) ·
+[Dream export](#facts-edges-and-the-dream) · [Protocol](PROTOCOL.md) ·
+[Sync setup](CHEZMOI.md)
+
+## How it works
+
+Keep the package (code and templates) separate from the content store (knowledge
+and local Git history). An agent searches the store, reads matching pages, and
+checks their status and supersession chain before using them.
+
+```mermaid
+flowchart LR
+    Agent["Coding agent"] --> Search["wiki find / show"]
+    Search --> Store["Local Markdown graph: solutions + facts"]
+    Input["Canonical transcript JSON / optional Alma source"] --> Export["Explicit dream export"]
+    Export --> Raw["Local raw transcripts"]
+    Raw --> Review["Agent analysis and evidence review"]
+    Review --> Store
+    Store --> Commit["Explicit dream commit: local Git history"]
+```
+
+Loading the skill or installing the helper starts no background maintenance.
+`dream export` renders transcripts without invoking a model. Analysis is a separate
+agent step; `dream commit` records content changes. Neither scheduling nor
+promotion into global agent instructions is automatic. See the
+[read, write, and dream protocol](PROTOCOL.md) for the evidence rules and boundaries.
 
 ## Why
 
@@ -157,6 +190,35 @@ reports. Keep the existing store intact; prepare and verify a separate content
 repository before switching WIKI_HOME. Do not remove ignore rules or force-add
 private knowledge to the public package checkout.
 
+### DeepSeek Harness (DSH)
+
+[dsh-bugwiki](https://github.com/phillui-37/dsh-bugwiki) is a separate DSH plugin
+with a web settings client. It vendors a pinned revision of this repository as
+an unchanged `upstream/` submodule; plugin-specific tools, settings, and guidance
+live in the adapter. Updating this repository alone does not update that pin.
+
+Install it using the plugin's
+[installation instructions](https://github.com/phillui-37/dsh-bugwiki#requirements-and-installation),
+then select the content directory with `wikiHome` in **Plugins → Bugwiki → Settings**.
+Reuse an existing store, or initialize a new one with the adapter's maintenance CLI.
+The plugin currently targets macOS and DSH `>=0.2 <0.3`; use its documentation for
+current runtime requirements and configuration.
+
+- The `bugwiki` tool exposes `find`, `show`, `read`, `list`, `lint`, `verify`, and
+  `stale`. Graph writes use the host's ordinary file tools; maintenance is explicit.
+- When both DSH session services are available, `bugwiki_export_dream` exports
+  explicitly selected sessions through the bundled upstream Python exporter.
+  `dryRun` defaults to `true`; writing requires `dryRun: false`.
+- DSH session conversion belongs to the adapter. The core does not read DSH
+  sessions directly. The plugin includes no scheduled tasks, auto-commit, or
+  auto-publication.
+
+The plugin can optionally follow a matching installed upstream `SKILL.md` using
+`followUpstreamSkill`. See its
+[agent interface](https://github.com/phillui-37/dsh-bugwiki#agent-interface) and
+[maintenance guide](https://github.com/phillui-37/dsh-bugwiki#human-maintenance)
+for its tool contract, export limits, and review requirements.
+
 ## Usage
 
 | Command | Does |
@@ -173,11 +235,17 @@ On Windows the same commands exist as `wiki.cmd` (calls `wiki.ps1` with `pwsh`
 when installed, `powershell` otherwise). `WIKI_REGEX=1` works there too —
 `$env:WIKI_REGEX=1`.
 
-## Two gates
+## Write gates
 
-**New page: gated on cost.** 30+ minutes on the fix, or 3+ failed attempts, or the
+**New solution: gated on cost.** 30+ minutes on the fix, or 3+ failed attempts, or the
 error text does not explain the cause. A typo or a missing dependency the error
 already named gets no page. Cheap entries turn search into noise.
+
+**New fact: gated on evidence.** A `facts/<slug>.md` page needs a `source:` that
+identifies the real thread/message. Use `verified` only when the claim traces to
+a tool result; prose-only support remains `open`. Record validity and expiry
+where needed, and supersede changed facts instead of deleting their history.
+See [the write protocol](PROTOCOL.md#write-protocol).
 
 **Recurrence bump: never gated.** If a page answered your search, bump
 `recurrence:` before you move on. A wiki hit is cheap by definition, so gating the
@@ -212,7 +280,7 @@ Thresholds are env-overridable: `WIKI_STALE_DAYS`, `WIKI_ARCHIVE_DAYS`,
 
 | Project | What it does | Difference |
 | --- | --- | --- |
-| [yetone/magpie](https://github.com/yetone/magpie) | `LESSONS.md` written by a nightly commit review, promoted at 3 review days into `docs/code-standards.md` | There is no nightly review here, so entry is gated on the cost the agent just paid, and promotion starts at the second occurrence |
+| [yetone/magpie](https://github.com/yetone/magpie) | `LESSONS.md` written by a nightly commit review, promoted at 3 review days into `docs/code-standards.md` | Solution capture is gated on debugging cost; the optional dream analyzes transcripts rather than commits, and rule promotion remains a separate decision |
 | [compound-engineering](https://github.com/EveryInc/compound-engineering-plugin) `ce-compound` | captures solved problems under `docs/solutions/` in a repo | This is machine-wide (`~/.agents/`), not per-repo, and spans tools rather than one codebase |
 | `CLAUDE.md` / `AGENTS.md` memory | rules and conclusions | A rule without the symptom does not match; a symptom without failed attempts gets re-tried |
 
