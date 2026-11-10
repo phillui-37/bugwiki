@@ -396,5 +396,47 @@ class DreamWorkflowCLI(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain", "--", "facts/known.md", self.state()["report"]), "")
 
 
+
+    def events(self):
+        return [json.loads(line) for path in (self.root / ".dream" / "logs").glob("*.jsonl") for line in path.read_text().splitlines()]
+
+    def test_timestamped_events_cover_review_verify_commit_and_hide_content(self):
+        import datetime as dt
+        self.begin()
+        self.finish_transcript()
+        self.own_fact()
+        marker = "private-commit-message-fixture"
+        result = self.cli("commit", "-m", marker)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = self.events()
+        self.assertNotIn(marker, json.dumps(events))
+        self.assertNotIn("transcript body", json.dumps(events))
+        for stage, status in (("read", "emitted"), ("read", "acknowledged"), ("analysis", "recorded"), ("verify", "succeeded"), ("lint", "succeeded"), ("commit", "prepared"), ("commit", "published"), ("run", "success")):
+            self.assertTrue(any(e["stage"] == stage and e["status"] == status for e in events), (stage, status))
+        for e in events:
+            self.assertIsNotNone(dt.datetime.fromisoformat(e["timestamp"]).tzinfo)
+            self.assertGreaterEqual(e["elapsed_ms"], 0)
+        receipt = self.state()
+        completed = [e for e in events if e["stage"] == "run"][-1]
+        self.assertEqual(completed["commit"], receipt["commit"])
+        self.assertEqual(completed["run_id"], receipt["id"])
+        self.assertGreaterEqual(completed["run_elapsed_ms"], 0)
+
+    def test_rejected_command_logs_failure_and_read_stdout_stays_exact(self):
+        self.begin()
+        read = self.cli("read", "--thread", str(self.transcript), "--limit", "5")
+        self.assertEqual(read.stdout, "trans")
+        rejected = self.cli("complete", "--thread", str(self.transcript), "--status", "analyzed", "--source-complete")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertTrue(any(e["stage"] == "validation" and e["status"] == "failed" for e in self.events()))
+        self.assertEqual(self.events()[-1]["exit_code"], 1)
+
+    def test_read_only_status_writes_no_events(self):
+        result = self.cli("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / ".dream").exists())
+        self.assertIn("event_logs", json.loads(result.stdout))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -87,7 +87,8 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("choose a source", result.stderr)
         self.assertFalse(marker.exists())
-        self.assertFalse((self.root / ".dream").exists())
+        self.assertFalse((self.root / ".dream" / "pending-batch.json").exists())
+        self.assertTrue(list((self.root / ".dream" / "logs").glob("*.jsonl")))
 
     def test_malformed_and_missing_requested_thread_leave_state_unchanged(self):
         state_dir = self.root / ".dream"
@@ -402,6 +403,28 @@ elif a[0:2]==['thread','messages']: print(json.dumps({'messages':[], 'hasMore':F
         self.assertEqual(checkpoint.read_text().strip(), manifest["source_boundary"])
         self.assertNotEqual(checkpoint.read_text().strip(), manifest["since"])
         self.assertFalse((self.root / ".dream" / "pending-batch.json").exists())
+
+
+
+    def test_export_logs_fetch_publication_timestamps_without_transcript_text(self):
+        import datetime as dt
+        data = self.sample()
+        marker = "fixture-private-content-not-for-logs"
+        data["threads"][0]["messages"][0]["content"] = marker
+        result = self.run_wiki("--input", str(self.write_input(data)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = "".join(p.read_text() for p in (self.root / ".dream" / "logs").glob("*.jsonl"))
+        self.assertNotIn(marker, text)
+        events = [json.loads(line) for line in text.splitlines()]
+        stages = {(e["stage"], e["status"]) for e in events}
+        self.assertIn(("source_fetch", "started"), stages)
+        self.assertIn(("source_fetch", "succeeded"), stages)
+        self.assertIn(("batch", "published"), stages)
+        self.assertEqual(events[-1]["exit_code"], 0)
+        for e in events:
+            self.assertIsNotNone(dt.datetime.fromisoformat(e["timestamp"]).tzinfo)
+            self.assertGreaterEqual(e["elapsed_ms"], 0)
+            self.assertTrue(e["description"])
 
 
 if __name__ == "__main__": unittest.main()

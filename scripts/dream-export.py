@@ -10,6 +10,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+
+from dream_log import bind, event, run_logged
 
 USER_CHARS = 4000
 AGENT_CHARS = 4000
@@ -199,6 +202,8 @@ def main() -> int:
                 os.makedirs(os.path.join(root, ".dream"), exist_ok=True)
                 atomic_write(os.path.join(root, ".dream", "pending-batch.json"),
                              json.dumps({"batch_id": metadata["batch_id"], "path": os.path.relpath(directory, root)}) + "\n")
+            bind(batch_id=metadata["batch_id"])
+            event("batch", "resumed", "Reusing published pending batch without fetching sources", transcript_count=len(metadata["transcripts"]))
             print(f"resume {directory} (existing immutable batch; source selection was not rerun)")
             return 0
         source = "input" if args.input else "alma"
@@ -210,7 +215,10 @@ def main() -> int:
             since_dt = parse_stamp(open(state, encoding="utf-8").read()) if os.path.exists(state) else None
             since_dt = since_dt - dt.timedelta(minutes=30) if since_dt else dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
         selected_at = dt.datetime.now(dt.timezone.utc)
+        fetch_started = time.monotonic()
+        event("source_fetch", "started", "Fetching source transcript pages", source=source)
         threads, source = load_threads(args, since_dt)
+        event("source_fetch", "succeeded", "Source fetch completed", source=source, transcript_count=len(threads), duration_ms=round((time.monotonic()-fetch_started)*1000))
         ids = [t["id"] for t in threads]
         duplicates = sorted({tid for tid in ids if ids.count(tid) > 1})
         if duplicates:
@@ -243,6 +251,8 @@ def main() -> int:
         identity = json.dumps({"source": source, "source_hash": source_hash,
                                "render_settings": render_settings, "advances_watermark": advances_watermark}, sort_keys=True)
         batch_id = hashlib.sha256(identity.encode()).hexdigest()[:20]
+        bind(batch_id=batch_id)
+        event("render", "succeeded", "Compact export rendered; original-source coverage still requires review", transcript_count=len(plan), characters=total)
         print(f"threads: {len(plan)}  since: {since_dt.date()}  characters: {total}")
         for _, name, body in plan: print(f"  {name}  {len(body)} characters")
         if args.dry_run: return 0
@@ -308,10 +318,12 @@ def main() -> int:
             pointer = os.path.join(root, ".dream", "pending-batch.json")
             os.makedirs(os.path.dirname(pointer), exist_ok=True)
             atomic_write(pointer, json.dumps({"batch_id": batch_id, "path": os.path.relpath(out_dir, root)}, sort_keys=True, indent=2) + "\n")
+        event("batch", "published", "Immutable batch and pending pointer available", transcript_count=len(plan))
         print(f"wrote {out_dir}" + (" (existing immutable batch)" if os.path.exists(os.path.join(out_dir, "manifest.json")) else ""))
         return 0
     except (ValueError, OSError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+        event("export", "failed", "Export failed; no processing success recorded", error_type=type(exc).__name__)
         print(f"dream export: {exc}", file=sys.stderr)
         return 1
 
-if __name__ == "__main__": sys.exit(main())
+if __name__ == "__main__": sys.exit(run_logged(main, "export"))

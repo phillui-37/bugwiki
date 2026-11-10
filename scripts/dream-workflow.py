@@ -12,6 +12,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+
+from dream_log import bind, event, run_logged
 
 MAX_CHUNK = 12_000
 
@@ -135,6 +138,7 @@ def finish_metadata(root: Path, state: Path, run: dict) -> dict:
     run["commit"] = receipt["commit"]
     run["last_report_hash"] = receipt["report_hash"]
     save(state, run)
+    event("run", receipt["phase"], "Run receipt persisted", commit=receipt["commit"], outcome=receipt["phase"], source_watermark_eligible=run["advances_watermark"], run_elapsed_ms=round((dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(run["started"])).total_seconds() * 1000))
     return receipt
 
 
@@ -168,6 +172,7 @@ def publish_prepared(root: Path, state: Path, run: dict) -> dict:
     git(root, "reset", "-q", candidate, "--", *prepared["paths"])
     prepared.setdefault("completed", dt.datetime.now(dt.timezone.utc).isoformat())
     save(state, run)
+    event("commit", "published", "Prepared commit published and owned index entries reconciled", commit=candidate, outcome=prepared["outcome"])
     return finish_metadata(root, state, run)
 
 
@@ -217,6 +222,8 @@ def main() -> int:
     state = root / ".dream" / "workflow.json"
     try:
         run = json.loads(state.read_text()) if state.exists() else None
+        if run:
+            bind(run_id=run["id"], batch_id=run["batch_id"])
         if args.action == "begin":
             if not args.batch:
                 raise ValueError("--batch required")
@@ -261,10 +268,13 @@ def main() -> int:
                    "report": f"reports/{ident}.dream.md", "transcripts": transcripts, "owned": {},
                    "baseline_dirty": sorted(changed_paths(root)), "gaps": [], "started": now.isoformat()}
             save(state, run)
+            bind(run_id=ident, batch_id=batch_id)
+            event("batch", "started", "Frozen batch ready for transcript review", transcript_count=len(transcripts))
             print(ident)
             return 0
         if args.action == "status":
             details = dict(run or {"phase": "idle"})
+            details["event_logs"] = str(root / ".dream" / "logs" / "events-YYYY-MM-DD.jsonl")
             details["source_checkpoints"] = {p.name.removeprefix("last-run-"): p.read_text().strip() for p in (root / ".dream").glob("last-run-*")}
             legacy = root / ".dream" / "last-run"
             details["legacy_checkpoint"] = legacy.read_text().strip() if legacy.exists() else None
@@ -299,6 +309,7 @@ def main() -> int:
                     outstanding = {"start": start, "end": min(start + args.limit, len(text))}
                     record["outstanding"] = outstanding
                 save(state, run)
+                event("read", "emitted", "Transcript chunk emitted; awaiting review acknowledgement", transcript=path.name, start_character=start, end_character=outstanding["end"])
                 sys.stdout.write(text[start:outstanding["end"]])
                 return 0
             if args.action == "ack":
@@ -308,6 +319,7 @@ def main() -> int:
                 record["ack"] = outstanding["end"]
                 record["outstanding"] = None
                 save(state, run)
+                event("read", "acknowledged", "Transcript chunk review acknowledged", transcript=path.name, through_character=record["ack"])
                 print(f"acknowledged through character {record['ack']}")
                 return 0
             if args.action == "resolve":
@@ -334,6 +346,7 @@ def main() -> int:
                     run["gaps"].append({"thread": args.thread, "reason": args.gaps.strip(), "resolved": False})
             run["phase"] = "processing"
             save(state, run)
+            event("analysis", "recorded", "Transcript analysis outcome updated", transcript=path.name, analysis=record["analysis"], source_complete=record["source_complete"], unresolved_gaps=sum(not g["resolved"] for g in run["gaps"]))
             return 0
         if args.action in ("own", "amend"):
             paths = [args.path] if args.action == "amend" else sys.stdin.read().splitlines()
@@ -355,6 +368,7 @@ def main() -> int:
                 run["owned"][rel] = actual
             run["phase"] = "processing"
             save(state, run)
+            event("artifacts", "registered", "Owned artifact hashes recorded", owned_count=len(run["owned"]))
             return 0
         if args.action == "commit":
             if run["phase"] == "partial":
@@ -374,7 +388,10 @@ def main() -> int:
             if staged_paths.intersection(set(run["owned"]) | {run["report"]}):
                 raise ValueError("owned paths have separately staged edits")
             for command in ("verify", "lint"):
+                check_started = time.monotonic()
+                event(command, "started", f"Running wiki {command}")
                 result = subprocess.run(["bash", str(Path(__file__).with_name("wiki")), command], env=dict(os.environ, WIKI_HOME=str(root)))
+                event(command, "succeeded" if result.returncode == 0 else "failed", f"Wiki {command} finished", exit_code=result.returncode, duration_ms=round((time.monotonic() - check_started) * 1000))
                 run.setdefault("checks", {})[command] = result.returncode
                 save(state, run)
                 if result.returncode:
@@ -402,9 +419,11 @@ def main() -> int:
                                "prepared_at": dt.datetime.now(dt.timezone.utc).isoformat()}
             run["phase"] = "committing"
             save(state, run)
+            event("commit", "prepared", "Exact candidate commit saved before publication", commit=candidate, owned_count=len(paths), outcome=outcome)
             print(json.dumps(publish_prepared(root, state, run)))
             return 0
     except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
+        event("validation", "failed", "Dream command rejected; inspect command stderr for details", error_type=type(error).__name__)
         print(f"dream {args.action}: {error}", file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr.strip(), file=sys.stderr)
@@ -412,4 +431,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_logged(main, "workflow"))
