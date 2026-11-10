@@ -598,6 +598,13 @@ cmd_dream() {
   local sub="${1:-status}"
   shift 2>/dev/null || true
   case "$sub" in
+    begin|progress|status|read|ack|complete|own|commit)
+      local workflow
+      workflow="$(cd -P "$(dirname "$_src")" && pwd)/dream-workflow.py"
+      [ -f "$workflow" ] || die "missing $workflow"
+      local action="$sub"; [ "$sub" != "begin" ] || action="begin"
+      if [ "$action" = progress ]; then action=status; fi
+      python3 "$workflow" --root "$WIKI" "$action" "$@" ;;
     export)
       # resolve next to the running script: this CLI lives in bin/ in a dev
       # checkout and in scripts/ once installed as a skill, and hardcoding

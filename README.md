@@ -292,4 +292,6 @@ A changed fact is never deleted: the old node gets `valid_to` + `status:
 obsolete`, the new one gets `supersedes: [old-slug]`. [PROTOCOL.md](PROTOCOL.md) defines the current schema, thresholds and agent
 policy; [CHEZMOI.md](CHEZMOI.md) explains the sync split (code syncs, content does not).
 
+Resumable dream processing, explicit acknowledgements and manifest-scoped commits are documented in [docs/dream-recovery.md](docs/dream-recovery.md). Exported transcripts are frozen and export alone does not count as successful processing.
+
 `tests/run.sh` is the offline regression suite (no network or live Alma calls).

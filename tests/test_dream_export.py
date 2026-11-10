@@ -45,9 +45,13 @@ class DreamExportTests(unittest.TestCase):
             data = self.sample()
             file = self.write_input(data)
             args = ["--input", "-" if stdin else str(file), "--since", "2026-11-09"]
+            if stdin:
+                alternate = Path(self.tmp.name) / "stdin-root"
+                alternate.mkdir()
+                args = ["--content-root", str(alternate), *args]
             result = subprocess.run(["bash", str(WIKI), "dream", "export", *args], input=json.dumps(data) if stdin else None, env=self.env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((self.root / ".dream" / "last-run-input").is_file())
+            self.assertFalse((self.root / ".dream" / "last-run-input").exists(), "export is not processed success")
         transcript = next((self.root / ".raw").glob("*/t-one-example.txt")).read_text()
         self.assertEqual(transcript.count("USER [id=u; timestamp=2026-11-09T10:00:00+02:00; timezone=Europe/Paris]"), 1)
         self.assertIn("ASSISTANT [id=a]:", transcript)
@@ -100,6 +104,17 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not found", result.stderr)
         self.assertEqual(state.read_text(), "checkpoint\n")
+
+    def test_export_retry_refuses_to_overwrite_frozen_batch(self):
+        file = self.write_input(self.sample())
+        first = self.run_wiki("--input", str(file))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        output = next((self.root / ".raw").glob("*/*.txt"))
+        original = output.read_bytes()
+        retry = self.run_wiki("--input", str(file))
+        self.assertNotEqual(retry.returncode, 0)
+        self.assertIn("refusing overwrite", retry.stderr)
+        self.assertEqual(output.read_bytes(), original)
 
     def test_dry_run_writes_nothing(self):
         file = self.write_input(self.sample())
@@ -187,9 +202,9 @@ elif a[0:2]==['thread','messages']:
         (state / "last-run").write_text("2026-11-09T11:00:00Z")
         result = subprocess.run(["bash", str(WIKI), "dream", "status"], env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("checkpoint (alma): 2026-11-09T12:00:00Z", result.stdout)
-        self.assertIn("checkpoint (input): 2026-11-09T13:00:00Z", result.stdout)
-        self.assertIn("legacy checkpoint (last-run): 2026-11-09T11:00:00Z", result.stdout)
+        self.assertIn('"alma": "2026-11-09T12:00:00Z"', result.stdout)
+        self.assertIn('"input": "2026-11-09T13:00:00Z"', result.stdout)
+        self.assertIn('"legacy_checkpoint": "2026-11-09T11:00:00Z"', result.stdout)
         self.assertNotIn("last run:     never", result.stdout)
 
     def test_tool_only_message_keeps_header_metadata(self):

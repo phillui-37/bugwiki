@@ -191,7 +191,11 @@ def main() -> int:
         if args.dry_run: return 0
         out_dir = os.path.join(root, ".raw", today)
         os.makedirs(out_dir, exist_ok=True)
-        # Stage every output before replacing any; checkpoint advances only after all replacements.
+        destinations = [os.path.join(out_dir, name) for _, name, _ in plan]
+        collisions = [p for p in destinations if os.path.exists(p)]
+        if collisions:
+            raise ValueError("frozen export exists; refusing overwrite: " + ", ".join(collisions))
+        # Stage every output before publishing the immutable batch.
         staged = []
         try:
             for tid, name, body in plan:
@@ -199,14 +203,13 @@ def main() -> int:
                 with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(body)
                 staged.append((tid, name, tmp))
             for tid, name, tmp in staged:
-                os.replace(tmp, os.path.join(out_dir, name))
-                for stale in os.listdir(out_dir):
-                    if stale.startswith(f"{tid}-") and stale != name: os.remove(os.path.join(out_dir, stale))
+                destination = os.path.join(out_dir, name)
+                if os.path.exists(destination):
+                    raise ValueError(f"frozen export already exists: {destination}; choose a new content root or batch date")
+                os.replace(tmp, destination)
         finally:
             for _, _, tmp in staged:
                 if os.path.exists(tmp): os.remove(tmp)
-        os.makedirs(os.path.join(root, ".dream"), exist_ok=True)
-        atomic_write(os.path.join(root, ".dream", f"last-run-{source}"), dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
         print(f"wrote {out_dir}")
         return 0
     except (ValueError, OSError, json.JSONDecodeError, RuntimeError) as exc:
