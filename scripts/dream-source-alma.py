@@ -75,6 +75,7 @@ def message(raw):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thread", action="append")
+    ap.add_argument("--exclude-thread", action="append", default=[])
     ap.add_argument("--since")
     args = ap.parse_args()
     try:
@@ -98,7 +99,9 @@ def main():
         threads = []
         for tid in ids:
             meta = next((t for t in listing if t.get("id") == tid), {"id": tid, "title": tid})
-            row = {"id": tid, "title": meta.get("title") or tid, "messages": [message(m) for m in fetch(tid)]}
+            row = {"id": tid, "title": meta.get("title") or tid, "messages": [] if tid in args.exclude_thread else [message(m) for m in fetch(tid)]}
+            if tid in args.exclude_thread:
+                row["exclusion"] = {"id": tid, "reason": "Explicit Dream-generated source ID excluded by caller; content not fetched or reviewed"}
             if meta.get("updatedAt") is not None: row["updatedAt"] = meta["updatedAt"]
             elif meta.get("createdAt") is not None: row["updatedAt"] = meta["createdAt"]
             threads.append(row)

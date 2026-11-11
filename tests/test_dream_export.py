@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline contract tests through the public wiki dream export command."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -52,7 +53,13 @@ class DreamExportTests(unittest.TestCase):
             result = subprocess.run(["bash", str(WIKI), "dream", "export", *args], input=json.dumps(data) if stdin else None, env=self.env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((self.root / ".dream" / "last-run-input").exists(), "export is not processed success")
-        transcript = next((self.root / ".raw").glob("*/*/t-one-example.txt")).read_text()
+        transcript_path = next((self.root / ".raw").glob("*/*/t-one-example.txt"))
+        transcript = transcript_path.read_text()
+        manifest = json.loads((transcript_path.parent / "manifest.json").read_text())
+        source_path = transcript_path.parent / "t-one.json"
+        self.assertIn("t-one.json", manifest["source_files"])
+        self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), manifest["source_files"]["t-one.json"])
+        self.assertEqual(json.loads(source_path.read_text())["messages"][1]["content"][1]["output"], 0)
         self.assertEqual(transcript.count("USER [id=u; timestamp=2026-11-09T10:00:00+02:00; timezone=Europe/Paris]"), 1)
         self.assertIn("ASSISTANT [id=a]:", transcript)
         self.assertIn("TOOL RESULT (Bash):\n0", transcript)
@@ -155,6 +162,23 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         result = self.run_wiki("--input", str(file))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed verification", result.stderr)
+
+    def test_old_compact_only_batch_is_reused_without_mutation(self):
+        source = self.write_input(self.sample())
+        result = self.run_wiki("--input", str(source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        batch = next((self.root / ".raw").glob("*/*"))
+        manifest_path = batch / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop("source_files")
+        manifest_path.write_text(json.dumps(manifest))
+        (batch / "t-one.json").unlink()
+        original_manifest = manifest_path.read_bytes()
+        (self.root / ".dream" / "pending-batch.json").unlink()
+        retry = self.run_wiki("--input", str(source))
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(manifest_path.read_bytes(), original_manifest)
+        self.assertFalse((batch / "t-one.json").exists())
 
     def test_dry_run_writes_nothing(self):
         file = self.write_input(self.sample())
