@@ -122,12 +122,17 @@ def finish_metadata(root: Path, state: Path, run: dict) -> dict:
     # Repeat every derived write on retry, even if a receipt already exists.
     save(root / ".dream" / "receipts" / f"{run['id']}-{receipt['commit']}.json", receipt)
     save(root / ".dream" / "receipts" / f"{run['id']}.json", receipt)
-    if receipt["phase"] == "success":
+    if receipt["phase"] in ("success", "reviewed_with_gaps"):
         save(root / ".dream" / "processed-batches" / f"{run['batch_id']}.json", receipt)
         pointer = root / ".dream" / "pending-batch.json"
         if pointer.exists() and json.loads(pointer.read_text())["batch_id"] == run["batch_id"]:
             pointer.unlink()
-        if run["advances_watermark"]:
+        if receipt["phase"] == "reviewed_with_gaps":
+            save(root / ".dream" / "unresolved-backlog" / f"{run['batch_id']}.json", {"batch_id": run["batch_id"], "run": run["id"], "gaps": [g for g in run["gaps"] if not g["resolved"]]})
+            if run["advances_watermark"]:
+                review = root / ".dream" / f"last-reviewed-{run['source']}"
+                atomic_text(review, run["source_boundary"] + "\n")
+        if run["advances_watermark"] and receipt["phase"] == "success":
             checkpoint = root / ".dream" / f"last-run-{run['source']}"
             boundary = dt.datetime.fromisoformat(run["source_boundary"])
             if checkpoint.exists():
@@ -204,10 +209,11 @@ def write_report(root: Path, run: dict, outcome: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True)
-    parser.add_argument("action", choices=["begin", "status", "read", "ack", "complete", "own", "amend", "resolve", "commit"])
+    parser.add_argument("action", choices=["begin", "status", "read", "source", "ack", "complete", "own", "amend", "resolve", "commit"])
     parser.add_argument("--batch")
     parser.add_argument("--thread")
     parser.add_argument("--limit", type=int, default=MAX_CHUNK)
+    parser.add_argument("--next", action="store_true", help="ack current chunk and emit the next chunk")
     parser.add_argument("--offset", type=int)
     parser.add_argument("--status", choices=["analyzed", "skipped"])
     parser.add_argument("--source-complete", action="store_true")
@@ -230,7 +236,7 @@ def main() -> int:
             batch = Path(args.batch).resolve()
             if not batch.is_relative_to(root / ".raw"):
                 raise ValueError("batch must be inside this wiki's .raw directory")
-            if run and run["phase"] != "success":
+            if run and run["phase"] not in ("success", "reviewed_with_gaps"):
                 if run["batch"] == str(batch):
                     print(run["id"])
                     return 0
@@ -242,8 +248,17 @@ def main() -> int:
             if (root / ".dream" / "processed-batches" / f"{batch_id}.json").exists():
                 raise ValueError("this immutable batch was already committed")
             names = metadata["transcripts"]
-            if len(set(names)) != len(names) or set(names) != {p.name for p in batch.glob("*.txt")}:
+            if len(set(names)) != len(names) or not set(names).issubset({p.name for p in batch.glob("*.txt")}):
                 raise ValueError("batch transcript inventory does not match manifest")
+            source_files = metadata.get("source_files", {})
+            if source_files:
+                expected_inventory = set(names) | set(source_files) | {"manifest.json"}
+                if {p.name for p in batch.iterdir()} != expected_inventory:
+                    raise ValueError("batch file inventory does not match manifest")
+                for source_name, source_hash in source_files.items():
+                    source_path = batch / source_name
+                    if Path(source_name).name != source_name or source_path.is_symlink() or digest(source_path) != source_hash:
+                        raise ValueError(f"source snapshot hash changed: {source_name}")
             transcripts = {}
             for name in names:
                 if Path(name).name != name or not name.endswith(".txt") or (batch / name).is_symlink():
@@ -284,11 +299,28 @@ def main() -> int:
             return 0
         if not run:
             raise ValueError("no active dream run; use dream begin --batch DIR")
-        if run["phase"] in ("success", "committing"):
+        if run["phase"] in ("success", "reviewed_with_gaps", "committing"):
             if args.action != "commit":
                 raise ValueError(f"run is {run['phase']}; only commit retry is allowed")
-            receipt = finish_metadata(root, state, run) if run["phase"] == "success" else publish_prepared(root, state, run)
+            receipt = finish_metadata(root, state, run) if run["phase"] in ("success", "reviewed_with_gaps") else publish_prepared(root, state, run)
             print(json.dumps(receipt))
+            return 0
+        if args.action == "source":
+            if not args.thread:
+                raise ValueError("--thread required")
+            batch = Path(run["batch"])
+            metadata = json.loads((batch / "manifest.json").read_text())
+            source_name = f"{args.thread}.json"
+            if source_name not in metadata.get("source_files", {}):
+                raise ValueError("full source snapshot unavailable for this legacy batch")
+            source_path = batch / source_name
+            if digest(source_path) != metadata["source_files"][source_name]:
+                raise ValueError("source snapshot hash changed")
+            data = json.loads(source_path.read_text(encoding="utf-8"))
+            text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+            start = args.offset or 0
+            if start < 0 or start > len(text): raise ValueError("invalid source offset")
+            sys.stdout.write(text[start:start + min(args.limit, MAX_CHUNK)])
             return 0
         if args.action in ("read", "ack", "complete", "resolve"):
             if args.thread not in run["transcripts"]:
@@ -319,6 +351,11 @@ def main() -> int:
                 record["ack"] = outstanding["end"]
                 record["outstanding"] = None
                 save(state, run)
+                if getattr(args, "next", False) and record["ack"] < len(text):
+                    record["outstanding"] = {"start": record["ack"], "end": min(record["ack"] + args.limit, len(text))}
+                    save(state, run)
+                    sys.stdout.write(text[record["ack"]:record["outstanding"]["end"]])
+                    return 0
                 event("read", "acknowledged", "Transcript chunk review acknowledged", transcript=path.name, through_character=record["ack"])
                 print(f"acknowledged through character {record['ack']}")
                 return 0
@@ -380,7 +417,7 @@ def main() -> int:
                 raise ValueError("unread/pending transcripts; use --partial to save an incomplete run")
             unresolved = any(not gap["resolved"] for gap in run["gaps"])
             incomplete_source = any(record["analysis"] == "analyzed" and not record["source_complete"] for record in run["transcripts"].values())
-            outcome = "partial" if pending or unresolved or incomplete_source else "success"
+            outcome = "partial" if pending else ("reviewed_with_gaps" if unresolved or incomplete_source else "success")
             for rel, expected in run["owned"].items():
                 if digest(owned_path(root, rel)) != expected:
                     raise ValueError(f"owned artifact changed: {rel}")

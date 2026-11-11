@@ -167,7 +167,7 @@ def main() -> int:
         if os.path.isfile(workflow_state):
             with open(workflow_state, encoding="utf-8") as state_file:
                 workflow = json.load(state_file)
-            if workflow.get("phase") != "success":
+            if workflow.get("phase") not in ("success", "reviewed_with_gaps"):
                 raise ValueError("an incomplete run must be resumed before exporting another batch")
         # Recover publication even if the process stopped before begin/pointer write.
         # Only manifest-backed batches created by this workflow participate.
@@ -183,7 +183,7 @@ def main() -> int:
             valid = (manifest_path.parent.name == metadata["batch_id"]
                      and set(names) == set(metadata["transcript_hashes"])
                      and len(set(names)) == len(names)
-                     and set(p.name for p in manifest_path.parent.iterdir()) == set(names) | {"manifest.json"})
+                     and set(p.name for p in manifest_path.parent.iterdir()) == set(names) | set(metadata.get("source_files", {})) | {"manifest.json"})
             for name in names:
                 path = manifest_path.parent / name
                 if Path(name).name != name or path.is_symlink() or not path.is_file():
@@ -191,6 +191,11 @@ def main() -> int:
                     break
                 if hashlib.sha256(path.read_bytes()).hexdigest() != metadata["transcript_hashes"][name]:
                     valid = False
+            if valid:
+                for name, expected_hash in metadata.get("source_files", {}).items():
+                    source_path = manifest_path.parent / name
+                    if Path(name).name != name or source_path.is_symlink() or not source_path.is_file() or hashlib.sha256(source_path.read_bytes()).hexdigest() != expected_hash:
+                        valid = False
             if not valid:
                 raise ValueError(f"existing immutable batch failed verification: {manifest_path.parent}")
             pending.append((manifest_path.parent, metadata))
@@ -211,8 +216,11 @@ def main() -> int:
             since_dt = parse_stamp(args.since)
             if since_dt is None: raise ValueError("--since must be a valid ISO date or timestamp")
         else:
+            review = os.path.join(root, ".dream", f"last-reviewed-{source}")
             state = os.path.join(root, ".dream", f"last-run-{source}")
-            since_dt = parse_stamp(open(state, encoding="utf-8").read()) if os.path.exists(state) else None
+            values = [parse_stamp(open(cursor, encoding="utf-8").read()) for cursor in (review, state) if os.path.exists(cursor)]
+            values = [value for value in values if value is not None]
+            since_dt = max(values) if values else None
             since_dt = since_dt - dt.timedelta(minutes=30) if since_dt else dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
         selected_at = dt.datetime.now(dt.timezone.utc)
         fetch_started = time.monotonic()
@@ -269,19 +277,22 @@ def main() -> int:
                             "source_hash": source_hash, "render_settings": render_settings,
                             "transcripts": [name for _, name, _ in plan],
                             "transcript_hashes": expected_hashes,
+                            "source_files": {f"{tid}.json": hashlib.sha256((json.dumps(next(t for t in chosen if t['id'] == tid), ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()).hexdigest() for tid, _, _ in plan},
                             "advances_watermark": advances_watermark}
                 try:
                     existing = json.loads(open(manifest_path, encoding="utf-8").read())
                     actual_names = set(os.listdir(candidate))
-                    expected_names = set(expected["transcripts"]) | {"manifest.json"}
-                    metadata_fields = set(expected) | {"source_boundary", "since", "selected_at"}
+                    legacy = "source_files" not in existing
+                    expected_names = set(expected["transcripts"]) | (set() if legacy else set(expected["source_files"])) | {"manifest.json"}
+                    metadata_fields = (set(expected) - {"source_files"} if legacy else set(expected)) | {"source_boundary", "since", "selected_at"}
                     valid = (set(existing) == metadata_fields
-                             and all(existing.get(k) == v for k, v in expected.items())
+                             and all(existing.get(k) == v for k, v in expected.items() if k != "source_files")
                              and existing.get("source_boundary") == existing.get("selected_at")
                              and parse_stamp(existing.get("source_boundary")) is not None
                              and parse_stamp(existing.get("since")) is not None
                              and actual_names == expected_names)
                     valid = valid and all(hashlib.sha256(open(os.path.join(candidate, n), "rb").read()).hexdigest() == h for n, h in expected_hashes.items())
+                    valid = valid and (legacy or all(hashlib.sha256(open(os.path.join(candidate, n), "rb").read()).hexdigest() == h for n, h in expected.get("source_files", {}).items()))
                 except (OSError, ValueError):
                     valid = False
                 if not valid:
@@ -300,11 +311,19 @@ def main() -> int:
                 for _, name, body in plan:
                     with open(os.path.join(staging, name), "w", encoding="utf-8") as output:
                         output.write(body)
+                source_files = {}
+                for tid, _, _ in plan:
+                    source_name = f"{tid}.json"
+                    source_body = json.dumps(next(t for t in chosen if t["id"] == tid), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+                    with open(os.path.join(staging, source_name), "w", encoding="utf-8") as output:
+                        output.write(source_body)
+                    source_files[source_name] = hashlib.sha256(source_body.encode()).hexdigest()
                 metadata = {"batch_id": batch_id, "source": source, "source_boundary": source_boundary,
                             "since": since_dt.isoformat(), "selected_at": source_boundary,
                             "source_hash": source_hash, "render_settings": render_settings,
                             "transcripts": [name for _, name, _ in plan],
                             "transcript_hashes": {name: hashlib.sha256(body.encode("utf-8")).hexdigest() for _, name, body in plan},
+                            "source_files": source_files,
                             "advances_watermark": advances_watermark}
                 with open(os.path.join(staging, "manifest.json"), "w", encoding="utf-8") as output:
                     json.dump(metadata, output, indent=2, sort_keys=True)

@@ -76,6 +76,25 @@ class DreamWorkflowCLI(unittest.TestCase):
         self.assertNotEqual(self.cli("read", "--thread", str(self.transcript), "--limit", "999999").returncode, 0)
         self.assertNotEqual(self.cli("complete", "--thread", str(self.transcript), "--status", "analyzed", "--source-complete").returncode, 0)
 
+
+    def test_all_unread_transcript_cannot_finalize(self):
+        self.begin()
+        result = self.cli("commit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("use --partial", result.stderr)
+
+    def test_ack_next_emits_only_the_next_chunk(self):
+        self.begin()
+        path = str(self.transcript)
+        first = self.cli("read", "--thread", path, "--limit", "5")
+        self.assertEqual(first.stdout, "trans")
+        next_chunk = self.cli("ack", "--thread", path, "--next", "--limit", "5")
+        self.assertEqual(next_chunk.stdout, "cript")
+        state = self.state()
+        rec = state["transcripts"][path]
+        self.assertEqual(rec["ack"], 5)
+        self.assertEqual(rec["outstanding"], {"start": 5, "end": 10})
+
     def test_transcript_change_after_analysis_rejects_commit(self):
         self.begin()
         self.finish_transcript()
@@ -193,13 +212,11 @@ class DreamWorkflowCLI(unittest.TestCase):
         self.finish_transcript(gaps="missing evidence")
         partial = self.cli("commit")
         self.assertEqual(partial.returncode, 0, partial.stderr + partial.stdout)
-        self.assertEqual(json.loads((self.root / ".dream" / "workflow.json").read_text())["phase"], "partial")
+        self.assertEqual(json.loads((self.root / ".dream" / "workflow.json").read_text())["phase"], "reviewed_with_gaps")
         self.assertFalse((self.root / ".dream" / "last-run-alma").exists())
-        resolution = self.cli("resolve", "--thread", str(self.transcript), "--gaps", "reviewed source message m-17")
-        self.assertEqual(resolution.returncode, 0, resolution.stderr)
-        result = self.cli("commit")
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertEqual((self.root / ".dream" / "last-run-alma").read_text().strip(), manifest["source_boundary"])
+        self.assertEqual((self.root / ".dream" / "last-reviewed-alma").read_text().strip(), manifest["source_boundary"])
+        backlog = json.loads(next((self.root / ".dream" / "unresolved-backlog").glob("*.json")).read_text())
+        self.assertEqual(backlog["gaps"][0]["reason"], "missing evidence")
 
     def test_failed_completion_command_is_checked(self):
         self.begin()

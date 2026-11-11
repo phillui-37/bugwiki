@@ -15,7 +15,7 @@ optional explicit Alma adapter. For DeepSeek Harness, use the separate
 [dsh-bugwiki plugin](https://github.com/phillui-37/dsh-bugwiki).
 
 [Install](#install) · [Usage](#usage) · [DSH integration](#deepseek-harness-dsh) ·
-[Dream export](#facts-edges-and-the-dream) · [Protocol](PROTOCOL.md) ·
+[Dream export](#facts-edges-and-the-dream) · [Recovery](docs/dream-recovery.md) · [Protocol](PROTOCOL.md) ·
 [Sync setup](CHEZMOI.md)
 
 ## How it works
@@ -355,7 +355,7 @@ wiki dream commit       # verify, report, commit, and write a receipt
 
 `threads` is the feed; thread `id` is a safe filename key and `title` is display text. `updatedAt` is the thread event/update time used by `--since` filtering and must include an explicit UTC offset. Message `id` identifies the message. `timestamp` is the original sent-at value, kept with its supplied offset; it may differ from the thread event time. `timezone` is optional source timezone metadata (for example an IANA zone) and is preserved separately. Message `role` is `user`, `assistant`, or `tool`; `content` is text or an ordered array of text, tool call, and tool result parts. A tool-only message still gets its message header.
 
-The Alma adapter requires `--source alma`; it captures a UTC `selected_at` upper bound before fetching, stores the lower `since` cutoff separately, and filters listed threads by that lower bound before fetching messages. Only a complete successful Alma batch advances its checkpoint to the captured upper bound. Forced `--thread` exports set `advances_watermark: false`; generic `--input` never changes a watermark. Automatic Alma runs overlap the prior checkpoint by 30 minutes. A pending or partial run must be resumed before another export. `--since` supplies an explicit cutoff. Keep distinct feeds in separate `WIKI_HOME` roots: generic thread IDs are only unique inside their feed, and separate roots prevent collisions. Export renders transcripts only and does not invoke a model. Existing Alma workflows add `--source alma`. The legacy `.dream/last-run` is shown by `dream status` but is not used by the new exporter; the first run uses the default seven-day window unless you provide `--since`. Date-only cutoffs use UTC. The optional Alma adapter lists up to 200 threads and fails if a selected thread still has more messages at the 2,000-message pagination limit.
+The Alma adapter requires `--source alma`; it captures a UTC `selected_at` upper bound before fetching, stores the lower `since` cutoff separately, and filters listed threads by that lower bound before fetching messages. Only a complete successful Alma batch advances the full-source checkpoint. Reviewed batches with unresolved gaps advance a separate reviewed selection cursor and persist a local unresolved backlog. Forced `--thread` exports set `advances_watermark: false`; generic `--input` never changes a watermark. Automatic Alma runs overlap the prior checkpoint by 30 minutes. A pending or partial run must be resumed before another export. `--since` supplies an explicit cutoff. Keep distinct feeds in separate `WIKI_HOME` roots: generic thread IDs are only unique inside their feed, and separate roots prevent collisions. Export renders transcripts only and does not invoke a model. Existing Alma workflows add `--source alma`. The legacy `.dream/last-run` is shown by `dream status` but is not used by the new exporter; the first run uses the default seven-day window unless you provide `--since`. Date-only cutoffs use UTC. The optional Alma adapter lists up to 200 threads and fails if a selected thread still has more messages at the 2,000-message pagination limit.
 
 The new workflow requires manifest-backed `.raw` batches. Installing the package source files alone does not migrate existing flat `.raw` batches, and those batches cannot be started with the new `begin` command. Preserve the current recovery batch and finish it with its original workflow before upgrading; there is no automatic migration of that recovery state.
 
@@ -363,6 +363,6 @@ A changed fact is never deleted: the old node gets `valid_to` + `status:
 obsolete`, the new one gets `supersedes: [old-slug]`. [PROTOCOL.md](PROTOCOL.md) defines the current schema, thresholds and agent
 policy; [CHEZMOI.md](CHEZMOI.md) explains the sync split (code syncs, content does not).
 
-Resumable dream processing, explicit acknowledgements and manifest-scoped commits are documented in [docs/dream-recovery.md](docs/dream-recovery.md). Exported transcripts are frozen and export alone does not count as successful processing.
+Resumable dream processing, explicit acknowledgements and manifest-scoped commits are documented in [docs/dream-recovery.md](docs/dream-recovery.md). New exports freeze compact transcripts and hash-verified canonical source JSON; export alone does not count as reviewed processing. See the recovery guide for reviewed-with-gaps receipts and legacy compact-only batches.
 
 `tests/run.sh` is the offline regression suite (no network or live Alma calls).
