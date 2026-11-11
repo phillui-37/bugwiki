@@ -70,4 +70,4 @@ wiki dream progress  # includes the event log location
 
 A `started` event without a terminal event means no completion event was recorded; it does not prove a hang. Compare timestamps with the scheduler deadline and transport errors. A gap between chunk emission and acknowledgement includes review, model and transport time; the log cannot attribute that gap to one cause.
 
-The package has no runtime or spend stop. The caller may yield when evidence is pending or review has made no progress; there is no per-night partial-spend quota.
+The package has no runtime or spend stop. A retrieval that returns no new source evidence blocks only its related gap; continue all independent transcript reviews and fact work. Do not retry an unchanged source query. Pause only when no authorized next action can progress, and record the exact missing input so the run can resume without rereading acknowledged chunks. There is no per-night partial-spend quota.

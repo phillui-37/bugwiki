@@ -87,7 +87,7 @@ wiki dream progress                    # resume the active manifest
 wiki dream commit                      # verify, report, commit, and receipt
 ```
 
-Follow [the recovery workflow](docs/dream-recovery.md) for bounded compact and source reads, explicit acknowledgements, unresolved evidence gaps, and safe retries. Do not invent runtime or spend stops. Yield only for pending evidence or no review progress; never retry gaps blindly.
+Follow [the recovery workflow](docs/dream-recovery.md) for bounded compact and source reads, explicit acknowledgements, unresolved evidence gaps, and safe retries. Do not invent runtime or spend stops. A failed source lookup blocks only its gap; continue independent work, do not retry unchanged queries, and pause only when no authorized action can progress. Never retry gaps blindly.
 
 `dream export` renders text and tool calls/results; it does not invoke a model.
 Generic callers provide the documented `threads` JSON shape. The optional Alma
