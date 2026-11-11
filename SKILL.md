@@ -92,7 +92,7 @@ Follow [the recovery workflow](docs/dream-recovery.md) for bounded compact and s
 `dream export` renders text and tool calls/results; it does not invoke a model.
 Generic callers provide the documented `threads` JSON shape. The optional Alma
 adapter maps its `tool-<Name>` parts and preserves message timestamps. Existing
-Alma workflows add `--source alma` explicitly.
+Alma workflows add `--source alma` explicitly. Use repeatable `--exclude-thread <id>` only for positively identified Dream-generated sources; this skips their fetch and records an exclusion without implying review. Titles alone never trigger exclusion.
 
 ### Dream method (per transcript)
 
@@ -118,7 +118,7 @@ The boundary is **reach**, not "canonical": automation may write fact pages
 because git makes that reversible; it may not write what every future session
 reads unconditionally. Prepare a separate content Git repository before analysis writes; `dream commit`
 refuses a store without `.git`. This boundary is agent policy, not a CLI sandbox.
-The commit stages the whole content root, so inspect pending changes first.
+The commit stages only registered owned pages and the generated report through an isolated index; unrelated staged and unstaged work stays intact.
 No scheduler or model-driven analysis is installed by the helper.
 
 ## Thresholds

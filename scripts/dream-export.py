@@ -79,6 +79,8 @@ def validate(data: object) -> list[dict]:
 def render(t: dict, tool_result_chars: int) -> str:
     tid = t["id"]
     lines = [f"SESSION {tid}  {t.get('title') or tid}", ""]
+    if t.get("exclusion"):
+        return "\n".join(lines + ["EXCLUDED: " + t["exclusion"]["reason"], ""])
     for msg in t["messages"]:
         role = msg["role"]
         fields = [f"id={msg.get('id') or '(none)'}"]
@@ -126,6 +128,7 @@ def load_threads(args, since: dt.datetime | None) -> tuple[list[dict], str]:
         return validate(json.loads(raw)), "input"
     if args.source == "alma":
         adapter_args = [] if not args.thread else sum((["--thread", x] for x in args.thread), [])
+        adapter_args += sum((["--exclude-thread", x] for x in args.exclude_thread), [])
         if since is not None and not args.thread:
             adapter_args += ["--since", since.isoformat()]
         p = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "dream-source-alma.py"), *adapter_args], capture_output=True, text=True)
@@ -159,6 +162,7 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--tool-result-chars", type=int, default=TOOL_RESULT_CHARS)
     ap.add_argument("--thread", action="append", help="select requested thread id (repeatable)")
+    ap.add_argument("--exclude-thread", action="append", default=[], help="explicit Dream-generated thread ID to exclude (repeatable)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     try:
@@ -242,6 +246,9 @@ def main() -> int:
                 stamp = parse_stamp(t.get("updatedAt"))
                 if stamp is None: raise ValueError(f"thread {t['id']}: missing or invalid updatedAt for automatic --since filtering")
                 if stamp >= since_dt: chosen.append(t)
+        for t in chosen:
+            if t["id"] in args.exclude_thread:
+                t["exclusion"] = {"id": t["id"], "reason": "Explicit Dream-generated source ID excluded by caller; content not reviewed"}
         today = dt.date.today().isoformat()
         plan = []
         for t in chosen:
