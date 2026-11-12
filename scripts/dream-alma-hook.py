@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -42,7 +43,7 @@ def main() -> int:
         payload = json.load(sys.stdin)
         data = payload.get("input", {})
         hook = payload.get("hook")
-        if hook not in {"tool.didExecute", "tool.onError"} or not is_nightly_dream(data.get("context")):
+        if hook not in {"tool.willExecute", "tool.didExecute", "tool.onError"} or not is_nightly_dream(data.get("context")):
             return 0
         tool = data.get("tool")
         result = data.get("result")
@@ -50,6 +51,8 @@ def main() -> int:
             "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds"),
             "component": "alma-hook",
             "stage": hook,
+            "thread_ref": hashlib.sha256(data["context"]["threadId"].encode()).hexdigest()[:16],
+            "correlation": "thread and tool; unique call id unavailable in hook payload",
             "tool": tool if isinstance(tool, str) and tool in TOOLS else "other",
             "command": "restricted",
             "output": "restricted",
@@ -68,7 +71,7 @@ def main() -> int:
                 stderr = result.get("stderr")
                 if isinstance(stdout, str):
                     lines = stdout.splitlines()
-                    safe = [line for line in lines if re.fullmatch(r"verify ok: [0-9]{1,9} pages \(schema\)|verify FAILED", line)]
+                    safe = [line for line in lines if re.fullmatch(r"verify ok: [0-9]{1,9} pages \(schema\)|verify FAILED|lint clean", line)]
                     record["stdout"] = safe
                     record["stdout_omitted_lines"] = len(lines) - len(safe)
                 if stderr == "":
@@ -78,7 +81,14 @@ def main() -> int:
         duration = data.get("duration")
         if type(duration) in (int, float) and 0 <= duration <= 2147483647:
             record["durationMs"] = round(duration)
+        if hook == "tool.onError":
+            record["error_category"] = "tool execution error; details omitted by privacy policy"
         if isinstance(result, dict):
+            for stream in ("stdout", "stderr"):
+                value = result.get(stream)
+                if isinstance(value, str):
+                    record[stream + "_bytes"] = len(value.encode("utf-8"))
+                    record[stream + "_omission_reason"] = "arbitrary content omitted by privacy policy"
             for key in ("exitCode", "durationMs"):
                 value = result.get(key)
                 if type(value) is int and 0 <= value <= 2147483647:

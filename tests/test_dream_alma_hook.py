@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dream-alma-hook.py"
 
@@ -50,14 +51,20 @@ class AlmaHookTest(unittest.TestCase):
             event["input"]["context"].update(threadId="dream", source="chat")
             invoke()
             self.assertEqual(logs[0].read_text(), contents)
-            event["hook"] = "tool.onError"
+            event["hook"] = "tool.willExecute"
             event["input"]["context"]["source"] = "cron"
+            invoke()
+            start = json.loads(logs[0].read_text().splitlines()[-1])
+            self.assertEqual(start["stage"], "tool.willExecute")
+            self.assertEqual(start["thread_ref"], record["thread_ref"])
+            self.assertNotIn("secret-", json.dumps(start))
+            event["hook"] = "tool.onError"
             event["input"]["error"] = "secret-error-details"
             invoke()
             lines = logs[0].read_text().splitlines()
-            self.assertEqual(len(lines), 2)
-            self.assertEqual(json.loads(lines[1])["stage"], "tool.onError")
-            self.assertNotIn("secret-", lines[1])
+            self.assertEqual(len(lines), 3)
+            self.assertEqual(json.loads(lines[2])["stage"], "tool.onError")
+            self.assertNotIn("secret-", lines[2])
             event["hook"] = "tool.didExecute"
             event["input"]["args"] = {"command": "wiki verify"}
             event["input"]["duration"] = 12.5
@@ -97,6 +104,55 @@ class AlmaHookTest(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertTrue(exact.exists())
             self.assertEqual(foreign.read_text(), '{"other":"data"}\n')
+
+    def test_active_command_does_not_block_append_or_allow_rotation(self):
+        spec = importlib.util.spec_from_file_location("dream_log", SCRIPT.parent / "dream_log.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "verbose-2026-01-01.jsonl"
+            path.write_text('{"format":"bugwiki-dream-verbose-v1"}\n')
+            os.utime(path, (1, 1))
+            code = ('import sys, fcntl; from pathlib import Path; '
+                    'sys.path.insert(0, sys.argv[1]); from dream_log import locked; '
+                    'lock = locked(Path(sys.argv[2]), ".active.lock", fcntl.LOCK_SH); '
+                    'lock.__enter__(); print("ready", flush=True); sys.stdin.readline(); lock.__exit__(None, None, None)')
+            proc = subprocess.Popen(["python3", "-c", code, str(SCRIPT.parent), tmp], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(proc.stdout.readline().strip(), "ready")
+                module.rotate(directory, 1800000000)
+                module.append(directory, {"stage": "test"})
+                self.assertTrue(path.exists())
+            finally:
+                proc.stdin.write("done\n")
+                proc.stdin.close()
+                proc.wait(timeout=5)
+                proc.stdout.close()
+            module.rotate(directory, 1800000000)
+            self.assertFalse(path.exists())
+
+    def test_rotation_does_not_delete_replaced_file(self):
+        spec = importlib.util.spec_from_file_location("dream_log", SCRIPT.parent / "dream_log.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "verbose-2026-01-01.jsonl"
+            path.write_text('{"format":"bugwiki-dream-verbose-v1"}\n')
+            os.utime(path, (1, 1))
+            original_owned = module.owned
+
+            def replace_after_open(fd):
+                result = original_owned(fd)
+                replacement = directory / "replacement"
+                replacement.write_text("unowned data")
+                os.replace(replacement, path)
+                return result
+
+            with patch.object(module, "owned", side_effect=replace_after_open):
+                module.rotate(directory, 1800000000)
+            self.assertEqual(path.read_text(), "unowned data")
 
     def test_rotation_keeps_old_logs_while_run_is_unfinished(self):
         spec = importlib.util.spec_from_file_location("dream_log", SCRIPT.parent / "dream_log.py")

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import re
@@ -26,7 +28,26 @@ def owned(fd: int) -> bool:
         return False
 
 
+@contextmanager
+def locked(directory: Path, name: str = ".verbose.lock", mode: int = fcntl.LOCK_EX):
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, mode)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def append(directory: Path, record: dict) -> None:
+    with locked(directory):
+        _append(directory, record)
+
+
+def _append(directory: Path, record: dict) -> None:
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     now = dt.datetime.now(dt.timezone.utc)
     path = directory / f"verbose-{now.date().isoformat()}.jsonl"
@@ -44,6 +65,15 @@ def append(directory: Path, record: dict) -> None:
 def rotate(directory: Path, now: float) -> None:
     if not directory.is_dir():
         return
+    try:
+        with locked(directory, ".active.lock", fcntl.LOCK_EX | fcntl.LOCK_NB):
+            with locked(directory):
+                _rotate(directory, now)
+    except BlockingIOError:
+        return
+
+
+def _rotate(directory: Path, now: float) -> None:
     dream = directory.parent
     if (dream / "pending-batch.json").exists():
         return
@@ -64,7 +94,13 @@ def rotate(directory: Path, now: float) -> None:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             try:
                 if owned(fd):
-                    path.unlink()
+                    opened = os.fstat(fd)
+                    current = path.lstat()
+                    if (stat.S_ISREG(current.st_mode)
+                            and (info.st_dev, info.st_ino, info.st_mtime_ns) == (opened.st_dev, opened.st_ino, opened.st_mtime_ns)
+                            and (opened.st_dev, opened.st_ino, opened.st_mtime_ns) == (current.st_dev, current.st_ino, current.st_mtime_ns)
+                            and current.st_mtime < now - _RETENTION_SECONDS):
+                        path.unlink()
             finally:
                 os.close(fd)
         except (FileNotFoundError, OSError):
@@ -81,6 +117,15 @@ def event(stage: str, status: str, description: str, **fields) -> None:
     safe_fields = {key: value for key, value in fields.items()
                    if (key in numeric_fields and type(value) is int and -2147483648 <= value <= 2147483647)
                    or (key in boolean_fields and type(value) is bool)}
+    for key in ("stdout_bytes", "stderr_bytes", "stdout_omitted_lines"):
+        if type(fields.get(key)) is int and 0 <= fields[key] <= 2147483647:
+            safe_fields[key] = fields[key]
+    if fields.get("error_type") in {"OSError", "ValueError", "CalledProcessError", "JSONDecodeError", "KeyError", "PermissionError", "FileNotFoundError"}:
+        safe_fields["error_type"] = fields["error_type"]
+    if "stdout_bytes" in safe_fields:
+        safe_fields["output_omission_reason"] = "arbitrary output omitted by privacy policy"
+    if fields.get("stdout_summary") in {"lint clean", "verify FAILED"} or re.fullmatch(r"verify ok: [0-9]{1,9} pages \(schema\)", str(fields.get("stdout_summary", ""))):
+        safe_fields["stdout_summary"] = fields["stdout_summary"]
     run_id = _context["ids"].get("run_id")
     if isinstance(run_id, str) and re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", run_id):
         safe_fields["run_id"] = run_id
@@ -114,15 +159,17 @@ def run_logged(main, component: str) -> int:
     root = Path(arguments[positions[-1] + 1]) if positions else Path(os.environ.get("WIKI_HOME", "~/.agents/wiki"))
     _context = {"root": root.expanduser().resolve(), "component": component, "action": action,
                 "invocation_id": uuid.uuid4().hex, "started": time.monotonic(), "ids": {}}
-    rotate(_context["root"] / ".dream" / "logs", time.time())
-    event("command", "started", f"Started dream {action}")
     try:
-        code = main()
-    except BaseException as error:
-        event("command", "failed", f"Dream {action} exited unexpectedly", error_type=type(error).__name__)
-        raise
-    else:
-        event("command", "succeeded" if code == 0 else "failed", f"Dream {action} finished", exit_code=code)
-        return code
+        rotate(_context["root"] / ".dream" / "logs", time.time())
+        with locked(_context["root"] / ".dream" / "logs", ".active.lock", fcntl.LOCK_SH):
+            event("command", "started", f"Started dream {action}")
+            try:
+                code = main()
+            except BaseException as error:
+                event("command", "failed", f"Dream {action} exited unexpectedly", error_type=type(error).__name__)
+                raise
+            else:
+                event("command", "succeeded" if code == 0 else "failed", f"Dream {action} finished", exit_code=code)
+                return code
     finally:
         _context = None
