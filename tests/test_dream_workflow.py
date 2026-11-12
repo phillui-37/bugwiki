@@ -30,6 +30,9 @@ class DreamWorkflowCLI(unittest.TestCase):
         self.transcript = self.root / ".raw" / "batch" / "t.txt"
         self.transcript.write_text("transcript body\n")
         manifest = {"batch_id": "batch-one", "source": "input", "source_boundary": "2026-11-10T00:00:00+00:00", "source_hash": "abc", "transcripts": ["t.txt"], "transcript_hashes": {"t.txt": hashlib.sha256(self.transcript.read_bytes()).hexdigest()}, "advances_watermark": False}
+        source = self.transcript.parent / "body.json"
+        source.write_text(json.dumps({"id": "body", "messages": [{"id": "m1", "role": "user", "content": "transcript body\n"}]}))
+        manifest["source_files"] = {"body.json": hashlib.sha256(source.read_bytes()).hexdigest()}
         (self.transcript.parent / "manifest.json").write_text(json.dumps(manifest))
 
     def tearDown(self):
@@ -52,6 +55,9 @@ class DreamWorkflowCLI(unittest.TestCase):
         remainder = self.cli("read", "--thread", path)
         self.assertEqual(remainder.stdout, "cript body\n")
         self.assertEqual(self.cli("ack", "--thread", path).returncode, 0)
+        if not gaps:
+            result = self.cli("recover", "--thread", str(self.transcript))
+            self.assertEqual(result.returncode, 0, result.stderr)
         complete_args = ["complete", "--thread", path, "--status", "analyzed", "--source-complete"]
         if gaps:
             complete_args.extend(["--gaps", gaps])
@@ -372,6 +378,8 @@ class DreamWorkflowCLI(unittest.TestCase):
         self.transcript.write_text(content)
         metadata_path = self.transcript.parent / "manifest.json"
         metadata = json.loads(metadata_path.read_text())
+        metadata["source_files"] = {}
+        (self.transcript.parent / "body.json").unlink()
         metadata["transcript_hashes"]["t.txt"] = hashlib.sha256(self.transcript.read_bytes()).hexdigest()
         metadata_path.write_text(json.dumps(metadata))
         self.begin()

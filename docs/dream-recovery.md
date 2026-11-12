@@ -14,10 +14,12 @@ For each transcript listed in the manifest, use its exact absolute path. `read` 
 ```sh
 wiki dream read --thread "$WIKI_HOME/.raw/2026-11-10/<batch-id>/thread.txt" --limit 12000
 wiki dream ack --thread "$WIKI_HOME/.raw/2026-11-10/<batch-id>/thread.txt"
+# Read ALL recover pages first; its stderr reports the next offset.
+wiki dream recover --thread <original-thread-id> --limit 4000
 wiki dream complete --thread "$WIKI_HOME/.raw/2026-11-10/<batch-id>/thread.txt" --status analyzed --source-complete
 ```
 
-An unacknowledged `read` replays the same chunk after retries or restarts; it never advances the cursor until `ack`. Chunk limits are capped at 12,000 characters, and offsets count Unicode characters. `complete` requires all characters acknowledged. `wiki dream ack --thread <path> --next` acknowledges the outstanding chunk and emits the next bounded chunk in one call; it reserves the next chunk without acknowledging that new text. `--status analyzed --source-complete` records the operator's explicit source coverage attestation; truncation markers alone neither establish nor invalidate that attestation. Use `--status skipped --reason 'reason'` to record an intentional exclusion. `--gaps` records missing evidence and must not be used as a substitute for a skip reason. A skipped transcript appears in the report and does not block subsequent runs. Other incomplete or unread transcripts remain pending. Pending/unread transcripts block finalization unless `--partial` is used to save genuinely unfinished work. A fully reviewed compact transcript with unresolved evidence gaps can finalize as `reviewed_with_gaps`: it is recorded as processed, advances `.dream/last-reviewed-<source>` for selection, leaves `.dream/last-run-<source>` unchanged, and persists gaps under `.dream/unresolved-backlog/`. Gaps carry forward and are never blindly retried. Resolve explicit provenance to reviewed evidence before claiming source-complete coverage. A failed owned file can be repaired only by an explicit amend that names its recorded prior hash; never silently replace it: `wiki dream amend --path facts/known-fact.md --expected-hash <registered-sha256>`. Resolve a gap with provenance to reviewed evidence before claiming complete coverage:
+An unacknowledged `read` replays the same chunk after retries or restarts; it never advances the cursor until `ack`. Chunk limits are capped at 12,000 characters, and offsets count Unicode characters. `complete` requires all characters acknowledged. `wiki dream ack --thread <path> --next` acknowledges the outstanding chunk and emits the next bounded chunk in one call; it reserves the next chunk without acknowledging that new text. `--status analyzed --source-complete` requires complete historical evidence emission with no source gaps, plus the operator's explicit review attestation; see the historical fallback protocol below. Use `--status skipped --reason 'reason'` to record an intentional exclusion. `--gaps` records missing evidence and must not be used as a substitute for a skip reason. A skipped transcript appears in the report and does not block subsequent runs. Other incomplete or unread transcripts remain pending. Pending/unread transcripts block finalization unless `--partial` is used to save genuinely unfinished work. A fully reviewed compact transcript with unresolved evidence gaps can finalize as `reviewed_with_gaps`: it is recorded as processed, advances `.dream/last-reviewed-<source>` for selection, leaves `.dream/last-run-<source>` unchanged, and persists gaps under `.dream/unresolved-backlog/`. Gaps carry forward and are never blindly retried. Resolve explicit provenance to reviewed evidence before claiming source-complete coverage. A failed owned file can be repaired only by an explicit amend that names its recorded prior hash; never silently replace it: `wiki dream amend --path facts/known-fact.md --expected-hash <registered-sha256>`. Resolve a gap with provenance to reviewed evidence before claiming complete coverage:
 
 ```sh
 wiki dream resolve --thread "$WIKI_HOME/.raw/2026-11-10/<batch-id>/thread.txt" --gaps 'reviewed source message msg-123'
@@ -71,3 +73,62 @@ wiki dream progress  # includes the event log location
 A `started` event without a terminal event means no completion event was recorded; it does not prove a hang. Compare timestamps with the scheduler deadline and transport errors. A gap between chunk emission and acknowledgement includes review, model and transport time; the log cannot attribute that gap to one cause.
 
 The package has no runtime or spend stop. A retrieval that returns no new source evidence blocks only its related gap; continue all independent transcript reviews and fact work. Do not retry an unchanged source query. Pause only when no authorized next action can progress, and record the exact missing input so the run can resume without rereading acknowledged chunks. There is no per-night partial-spend quota.
+
+## Historical original fallback and coverage receipts
+
+After compact review, use `wiki dream recover --thread <original-thread-id>`
+(or the manifest transcript path). The first call builds immutable local evidence
+under `.dream/evidence/<run-id>/<sha256>.json`. Further calls read that same
+artifact, without fetching the source again. Read every emitted page, then use
+`--source-complete` to attest review. The CLI cannot observe a model's attention
+or detect a chat renderer truncating its output: inspect outer truncation markers
+and read the existing overflow archive before attesting. An `ack` advances only
+the compact cursor. It never fills source coverage.
+
+```sh
+wiki dream recover --thread <original-thread-id> --offset 0 --limit 4000
+# stderr gives next_offset and total; continue at that exact offset until EOF.
+wiki dream recover --thread <original-thread-id> --offset 4000 --limit 4000
+# Only after all pages are actually visible and reviewed:
+wiki dream complete --thread "$TRANSCRIPT" --status analyzed --source-complete
+```
+
+Recovery follows this chain:
+
+1. The manifest-hashed canonical source snapshot, before compact rendering.
+2. For a truncated payload or missing IDs, Alma's actual
+   `thread messages <id> 20 --full --json --offset <n>` interface, following its
+   pagination (bounded at 2,000 messages). Only the frozen original message IDs
+   and explicitly recorded missing IDs are selected. A replacement must retain
+   the original tool-call IDs. Later unrelated messages are not reviewed.
+3. Exact retained-output file locators in those historical results, including
+   Alma's `Full output … saved to …` overflow archives. Nested retained archives
+   are followed to depth four, with cycles and unavailable files recorded as gaps.
+
+Evidence preserves message IDs, tool-call IDs, source page metadata, retained file
+paths, bytes and SHA256 hashes, and selected original API rows. Archive hashes
+identify the retained bytes observed at recovery time; they are not invented
+historical hashes. Tool input commands are never executed. Arbitrary current
+working files or newly rerun command output are not substituted for historical
+results. Private source content stays local; only package code and tests sync.
+
+Each output page has character offsets and a SHA256 receipt. Skipping an unread
+interval is rejected; rereading a page is allowed. `complete --source-complete`
+and `resolve` require the entire immutable evidence artifact to have been emitted
+and no unresolved source gaps. `resolve --gaps 'some explanation'` alone cannot
+clear missing evidence. Publication rechecks the evidence hash and coverage.
+These are delivery receipts plus an explicit reader attestation, never a claim
+that acknowledgement itself proves reading.
+
+When originals are absent, an archive is gone, the source still reports missing
+IDs/truncation/unfinished pagination, or the platform has no retained output,
+recovery records a precise gap. A legacy compact without a source inventory may
+recover surviving original IDs but cannot establish complete old scope. Finish
+its review with `--gaps` and retain `reviewed_with_gaps`; do not claim source
+completion. A platform cannot return bytes it never retained or has deleted.
+After genuinely new evidence becomes available, `recover --refresh` explicitly
+retries the lookup, preserves earlier evidence files, and resets coverage. Do not
+retry unchanged missing sources blindly.
+
+The `.dream/evidence/` artifacts and `.raw/` source snapshots are evidence, not
+diagnostic logs. A seven-day diagnostic-log rotation must never remove them.

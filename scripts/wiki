@@ -598,7 +598,7 @@ cmd_dream() {
   local sub="${1:-status}"
   shift 2>/dev/null || true
   case "$sub" in
-    begin|progress|read|source|ack|complete|own|amend|resolve|commit)
+    begin|progress|read|source|recover|ack|complete|own|amend|resolve|commit)
       local workflow
       workflow="$(cd -P "$(dirname "$_src")" && pwd)/dream-workflow.py"
       [ -f "$workflow" ] || die "missing $workflow"
@@ -617,7 +617,7 @@ cmd_dream() {
       helper="$(cd -P "$(dirname "$_src")" && pwd)/dream-export.py"
       [ -x "$helper" ] || die "missing $helper"
       "$helper" --content-root "$WIKI" "$@" ;;
-    *) die "usage: wiki dream <export|begin|progress|read|source|ack|complete|own|amend|resolve|commit|status> [options]" ;;
+    *) die "usage: wiki dream <export|begin|progress|read|source|recover|ack|complete|own|amend|resolve|commit|status> [options]" ;;
   esac
 }
 

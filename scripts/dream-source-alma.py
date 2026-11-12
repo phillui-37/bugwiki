@@ -52,6 +52,7 @@ def message(raw):
     role = msg.get("role", "assistant")
     if role not in ("user", "assistant", "tool"): role = "tool" if role == "tool" else "assistant"
     out = {"id": msg.get("id", raw.get("id", "")), "role": role}
+    out["sourceId"] = raw.get("id", out["id"])
     stamp = msg.get("timestamp", msg.get("createdAt", raw.get("timestamp", raw.get("createdAt"))))
     if stamp is not None: out["timestamp"] = stamp
     timezone = raw.get("metadata", {}).get("sentAtTimeZone")
@@ -69,9 +70,6 @@ def message(raw):
             content.append({"type": "tool_call", "name": name, "input": part.get("input"), **identity})
             if "output" in part:
                 value = part["output"]
-                if isinstance(value, dict):
-                    if "output" in value: value = value["output"]
-                    elif "text" in value: value = value["text"]
                 content.append({"type": "tool_result", "name": name, "output": value, **identity})
     out["content"] = content
     return out
