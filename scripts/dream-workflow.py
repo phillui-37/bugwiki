@@ -313,7 +313,7 @@ def main() -> int:
             return 0
         if args.action == "status":
             details = dict(run or {"phase": "idle"})
-            details["event_logs"] = str(root / ".dream" / "logs" / "events-YYYY-MM-DD.jsonl")
+            details["event_logs"] = str(root / ".dream" / "logs" / "verbose-YYYY-MM-DD.jsonl")
             details["source_checkpoints"] = {p.name.removeprefix("last-run-"): p.read_text().strip() for p in (root / ".dream").glob("last-run-*")}
             legacy = root / ".dream" / "last-run"
             details["legacy_checkpoint"] = legacy.read_text().strip() if legacy.exists() else None
@@ -461,8 +461,14 @@ def main() -> int:
             for command in ("verify", "lint"):
                 check_started = time.monotonic()
                 event(command, "started", f"Running wiki {command}")
-                result = subprocess.run(["bash", str(Path(__file__).with_name("wiki")), command], env=dict(os.environ, WIKI_HOME=str(root)))
-                event(command, "succeeded" if result.returncode == 0 else "failed", f"Wiki {command} finished", exit_code=result.returncode, duration_ms=round((time.monotonic() - check_started) * 1000))
+                result = subprocess.run(["bash", str(Path(__file__).with_name("wiki")), command], env=dict(os.environ, WIKI_HOME=str(root)), capture_output=True)
+                sys.stdout.buffer.write(result.stdout)
+                sys.stdout.buffer.flush()
+                sys.stderr.buffer.write(result.stderr)
+                sys.stderr.buffer.flush()
+                lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+                summaries = [line for line in lines if re.fullmatch(r"verify ok: [0-9]{1,9} pages \(schema\)|verify FAILED|lint clean", line)]
+                event(command, "succeeded" if result.returncode == 0 else "failed", f"Wiki {command} finished", exit_code=result.returncode, duration_ms=round((time.monotonic() - check_started) * 1000), stdout_bytes=len(result.stdout), stderr_bytes=len(result.stderr), stdout_omitted_lines=len(lines) - len(summaries), stdout_summary=summaries[0] if summaries else None)
                 run.setdefault("checks", {})[command] = result.returncode
                 save(state, run)
                 if result.returncode:
