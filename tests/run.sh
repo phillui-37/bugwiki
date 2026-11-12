@@ -194,6 +194,9 @@ if cmp -s "$TMP/g.r1" "$TMP/g/README.md"; then ok "second index run is a no-op";
 echo "8. resumable dream workflow public CLI regressions"
 if python3 "$PKG/tests/test_dream_workflow.py"; then ok "progress, acknowledgements and scoped commit"; else bad "progress, acknowledgements and scoped commit"; fi
 
+echo "9. Alma tool hook source and privacy boundaries"
+if python3 "$PKG/tests/test_dream_alma_hook.py"; then ok "nightly dream tool metadata stays scoped and private"; else bad "nightly dream tool metadata stays scoped and private"; fi
+
 echo "10. find spans both kinds and resolves a cross-kind edge"
 seed "$TMP/j"; export WIKI_HOME="$TMP/j"
 cat > "$TMP/j/facts/f-demo.md" <<'EOF'

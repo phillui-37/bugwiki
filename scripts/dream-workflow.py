@@ -313,7 +313,7 @@ def main() -> int:
             return 0
         if args.action == "status":
             details = dict(run or {"phase": "idle"})
-            details["event_logs"] = str(root / ".dream" / "logs" / "events-YYYY-MM-DD.jsonl")
+            details["event_logs"] = str(root / ".dream" / "logs" / "verbose-YYYY-MM-DD.jsonl")
             details["source_checkpoints"] = {p.name.removeprefix("last-run-"): p.read_text().strip() for p in (root / ".dream").glob("last-run-*")}
             legacy = root / ".dream" / "last-run"
             details["legacy_checkpoint"] = legacy.read_text().strip() if legacy.exists() else None
