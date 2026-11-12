@@ -15,6 +15,7 @@ import tempfile
 import time
 
 from dream_log import bind, event, run_logged
+from dream_original import capture, require_complete
 
 MAX_CHUNK = 12_000
 
@@ -98,7 +99,7 @@ def owned_path(root: Path, rel: str) -> Path:
     return path
 
 
-def check_sources(run: dict) -> None:
+def check_sources(run: dict, *, coverage=False) -> None:
     if digest(Path(run["batch"]) / "manifest.json") != run["manifest_hash"]:
         raise ValueError("batch manifest changed")
     metadata = json.loads((Path(run["batch"]) / "manifest.json").read_text())
@@ -107,6 +108,8 @@ def check_sources(run: dict) -> None:
         if Path(source_name).name != source_name or source_path.is_symlink() or digest(source_path) != source_hash:
             raise ValueError(f"source snapshot hash changed: {source_name}")
     for name, record in run["transcripts"].items():
+        if coverage and record["source_complete"]:
+            require_complete(record)
         if digest(Path(name)) != record["hash"]:
             raise ValueError(f"transcript hash changed: {name}")
 
@@ -169,7 +172,7 @@ def publish_prepared(root: Path, state: Path, run: dict) -> dict:
     if head not in (prepared["parent"], candidate):
         raise ValueError("HEAD moved outside the prepared dream commit; manual reconciliation required")
     if head == prepared["parent"]:
-        check_sources(run)
+        check_sources(run, coverage=True)
         for rel, expected in prepared["hashes"].items():
             if digest(safe_path(root, rel)) != expected:
                 raise ValueError(f"prepared artifact changed: {rel}")
@@ -212,6 +215,9 @@ def write_report(root: Path, run: dict, outcome: str) -> None:
              "", "## Transcript outcomes", ""]
     for name, record in records.items():
         lines.append(f"- `{Path(name).name}`: {record['analysis']}; acknowledged {record['ack']} characters; source coverage {'attested' if record['source_complete'] else 'not attested'}" + (f" — {record['reason']}" if record["reason"] else ""))
+        proof = record.get("evidence")
+        if proof:
+            lines.append(f"  - Historical evidence: `{proof['path']}`; SHA256 `{proof['sha256']}`; emitted {proof['emitted_through']}/{proof['characters']} characters in {len(proof['pages'])} recorded ranges; {len(proof['gaps'])} source gaps. Emission is not proof of model-visible reading.")
     lines.extend(["", "## Source gaps", ""])
     for gap in run["gaps"]:
         lines.append(f"- `{Path(gap['thread']).name}`: {gap['reason']}" + (f" (resolved with: {gap['resolution']})" if gap["resolved"] else " (unresolved)"))
@@ -222,12 +228,13 @@ def write_report(root: Path, run: dict, outcome: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True)
-    parser.add_argument("action", choices=["begin", "status", "read", "source", "ack", "complete", "own", "amend", "resolve", "commit"])
+    parser.add_argument("action", choices=["begin", "status", "read", "source", "recover", "ack", "complete", "own", "amend", "resolve", "commit"])
     parser.add_argument("--batch")
     parser.add_argument("--thread")
     parser.add_argument("--limit", type=int, default=MAX_CHUNK)
     parser.add_argument("--next", action="store_true", help="ack current chunk and emit the next chunk")
     parser.add_argument("--offset", type=int)
+    parser.add_argument("--refresh", action="store_true", help="explicitly retry original lookup after new evidence becomes available")
     parser.add_argument("--status", choices=["analyzed", "skipped"])
     parser.add_argument("--source-complete", action="store_true")
     parser.add_argument("--gaps", default="")
@@ -325,11 +332,48 @@ def main() -> int:
             return 0
         if not run:
             raise ValueError("no active dream run; use dream begin --batch DIR")
-        if run["phase"] in ("success", "reviewed_with_gaps", "committing") and args.action != "source":
+        if run["phase"] in ("success", "reviewed_with_gaps", "committing") and args.action not in ("source", "recover"):
             if args.action != "commit":
                 raise ValueError(f"run is {run['phase']}; only commit retry is allowed")
             receipt = finish_metadata(root, state, run) if run["phase"] in ("success", "reviewed_with_gaps") else publish_prepared(root, state, run)
             print(json.dumps(receipt))
+            return 0
+        if args.action == "recover":
+            if not 1 <= args.limit <= MAX_CHUNK:
+                raise ValueError(f"--limit must be between 1 and {MAX_CHUNK}")
+            check_sources(run)
+            matches = [(name, rec) for name, rec in run["transcripts"].items()
+                       if name == args.thread or Path(name).read_text().splitlines()[0].split()[1] == args.thread]
+            if len(matches) != 1:
+                raise ValueError("--thread must identify exactly one manifest transcript or original thread ID")
+            name, record = matches[0]
+            proof = record.get("evidence")
+            if proof is None or args.refresh:
+                bundle = capture(run, name)
+                body = json.dumps(bundle, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+                checksum = hashlib.sha256(body.encode()).hexdigest()
+                dest = root / ".dream" / "evidence" / run["id"] / f"{checksum}.json"
+                atomic_text(dest, body)
+                proof = {"path": str(dest), "sha256": checksum, "characters": len(body),
+                         "emitted_through": 0, "pages": [], "gaps": bundle["gaps"]}
+                record["evidence"] = proof
+                record["source_complete"] = False
+            if digest(Path(proof["path"])) != proof["sha256"]:
+                raise ValueError("historical evidence changed")
+            text = Path(proof["path"]).read_text()
+            start = proof["emitted_through"] if args.offset is None else args.offset
+            if not 0 <= start <= proof["emitted_through"]:
+                raise ValueError("non-contiguous source offset; unread pages cannot be skipped")
+            end = min(start + args.limit, len(text))
+            page = text[start:end]
+            sys.stdout.write(page)
+            sys.stdout.flush()
+            proof["emitted_through"] = max(proof["emitted_through"], end)
+            receipt = {"start": start, "end": end, "sha256": hashlib.sha256(page.encode()).hexdigest()}
+            if receipt not in proof["pages"]:
+                proof["pages"].append(receipt)
+            save(state, run)
+            print(f"\nsource next_offset={end} total={len(text)} gaps={len(proof['gaps'])}; emitted, NOT proof of model-visible review", file=sys.stderr)
             return 0
         if args.action == "source":
             if not 1 <= args.limit <= MAX_CHUNK:
@@ -395,6 +439,7 @@ def main() -> int:
                 matches = [gap for gap in run["gaps"] if gap["thread"] == args.thread and not gap["resolved"]]
                 if not matches or not args.gaps.strip():
                     raise ValueError("resolve needs an unresolved gap and evidence provenance in --gaps")
+                require_complete(record)
                 for gap in matches:
                     gap.update(resolved=True, resolution=args.gaps.strip())
                 if record["analysis"] == "analyzed":
@@ -410,9 +455,11 @@ def main() -> int:
                         raise ValueError("supply --source-complete or record unresolved --gaps")
                 else:
                     raise ValueError("--status required")
+                if args.status == "analyzed" and args.source_complete and not args.gaps.strip():
+                    require_complete(record)
                 record.update(analysis=args.status, source_complete=args.status == "analyzed" and args.source_complete and not args.gaps.strip(), reason=args.reason.strip())
                 if args.gaps.strip():
-                    run["gaps"].append({"thread": args.thread, "reason": args.gaps.strip(), "resolved": False})
+                    run["gaps"].append({"thread": args.thread, "reason": args.gaps.strip(), "resolved": False, "evidence": record.get("evidence")})
             run["phase"] = "processing"
             save(state, run)
             event("analysis", "recorded", "Transcript analysis outcome updated", transcript=path.name, analysis=record["analysis"], source_complete=record["source_complete"], unresolved_gaps=sum(not g["resolved"] for g in run["gaps"]))
@@ -445,7 +492,7 @@ def main() -> int:
                     print(json.dumps(receipt_for(run)))
                     return 0
                 run["phase"] = "processing"
-            check_sources(run)
+            check_sources(run, coverage=True)
             pending = any(record["analysis"] == "pending" for record in run["transcripts"].values())
             if pending and not args.partial:
                 raise ValueError("unread/pending transcripts; use --partial to save an incomplete run")

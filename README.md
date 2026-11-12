@@ -366,3 +366,5 @@ policy; [CHEZMOI.md](CHEZMOI.md) explains the sync split (code syncs, content do
 Resumable dream processing, explicit acknowledgements and manifest-scoped commits are documented in [docs/dream-recovery.md](docs/dream-recovery.md). New exports freeze compact transcripts and hash-verified canonical source JSON; export alone does not count as reviewed processing. See the recovery guide for reviewed-with-gaps receipts and legacy compact-only batches.
 
 `tests/run.sh` is the offline regression suite (no network or live Alma calls).
+
+Dream historical evidence recovery uses `wiki dream recover`: see [source fallback and coverage receipts](docs/dream-recovery.md#historical-original-fallback-and-coverage-receipts). Compact acknowledgement alone cannot mark a source complete.

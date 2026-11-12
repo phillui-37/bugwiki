@@ -28,7 +28,7 @@ def call(args):
 
 
 def fetch(tid, page=100, cap=2000):
-    items, offset = [], 0
+    items, pages, offset = [], [], 0
     while offset < cap:
         data = call(["thread", "messages", tid, str(page), "--full", "--json", "--offset", str(offset)])
         batch = data if isinstance(data, list) else data.get("messages", data.get("data", []))
@@ -36,7 +36,11 @@ def fetch(tid, page=100, cap=2000):
         if not batch and (data.get("hasMore") if isinstance(data, dict) else False):
             raise RuntimeError(f"Alma pagination made no progress for {tid} at offset {offset}")
         items.extend(batch)
-        if not isinstance(data, dict) or not data.get("hasMore"): return items
+        page_info = {"requestedOffset": offset, "returnedCount": len(batch)}
+        if isinstance(data, dict):
+            page_info.update({key: data[key] for key in ("offset", "limit", "total", "hasMore", "nextOffset", "scope", "missingMessageIds", "contentMode", "sourceTextTruncated", "coverageNote") if key in data})
+        pages.append(page_info)
+        if not isinstance(data, dict) or not data.get("hasMore"): return items, pages
         nxt = data.get("nextOffset", offset + len(batch))
         if not isinstance(nxt, int) or nxt <= offset: raise RuntimeError(f"Alma pagination did not advance for {tid}")
         offset = nxt
@@ -48,6 +52,7 @@ def message(raw):
     role = msg.get("role", "assistant")
     if role not in ("user", "assistant", "tool"): role = "tool" if role == "tool" else "assistant"
     out = {"id": msg.get("id", raw.get("id", "")), "role": role}
+    out["sourceId"] = raw.get("id", out["id"])
     stamp = msg.get("timestamp", msg.get("createdAt", raw.get("timestamp", raw.get("createdAt"))))
     if stamp is not None: out["timestamp"] = stamp
     timezone = raw.get("metadata", {}).get("sentAtTimeZone")
@@ -61,13 +66,11 @@ def message(raw):
         elif kind in ("reasoning", "step-start"): continue
         elif kind.startswith("tool-"):
             name = kind[5:]
-            content.append({"type": "tool_call", "name": name, "input": part.get("input")})
+            identity = {"toolCallId": part["toolCallId"]} if part.get("toolCallId") else {}
+            content.append({"type": "tool_call", "name": name, "input": part.get("input"), **identity})
             if "output" in part:
                 value = part["output"]
-                if isinstance(value, dict):
-                    if "output" in value: value = value["output"]
-                    elif "text" in value: value = value["text"]
-                content.append({"type": "tool_result", "name": name, "output": value})
+                content.append({"type": "tool_result", "name": name, "output": value, **identity})
     out["content"] = content
     return out
 
@@ -99,7 +102,8 @@ def main():
         threads = []
         for tid in ids:
             meta = next((t for t in listing if t.get("id") == tid), {"id": tid, "title": tid})
-            row = {"id": tid, "title": meta.get("title") or tid, "messages": [] if tid in args.exclude_thread else [message(m) for m in fetch(tid)]}
+            messages, pages = ([], []) if tid in args.exclude_thread else fetch(tid)
+            row = {"id": tid, "title": meta.get("title") or tid, "messages": [message(m) for m in messages], "source_pages": pages}
             if tid in args.exclude_thread:
                 row["exclusion"] = {"id": tid, "reason": "Explicit Dream-generated source ID excluded by caller; content not fetched or reviewed"}
             if meta.get("updatedAt") is not None: row["updatedAt"] = meta["updatedAt"]

@@ -168,3 +168,5 @@ verification checks and labels the output; it does not move or rewrite pages.
 Relative-path edges and path-derived kinds remain supported. Date-dependent Bash
 commands currently require BSD-style `date`; GNU/Linux support is limited as
 noted in the README. Native PowerShell lacks graph/dream commands.
+
+Historical-source completion requires `dream recover` evidence with complete bounded emission, unchanged hashes and no source gaps; see [the recovery protocol](docs/dream-recovery.md#historical-original-fallback-and-coverage-receipts). A reader must still attest actual review. Neither compact `ack` nor free-text gap resolution proves source coverage.

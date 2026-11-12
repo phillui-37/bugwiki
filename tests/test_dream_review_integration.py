@@ -37,6 +37,7 @@ class ReviewIntegration(unittest.TestCase):
         self.assertTrue(any(e['stage'] == 'read' and e.get('start_character') == 5 for e in logs))
 
     def test_source_cli_bounds_tamper_and_terminal_read(self):
+        (self.f.transcript.parent / "body.json").unlink()
         self.f.transcript.write_text('SESSION t fixture\n\ncompact body\n')
         source = self.f.transcript.parent / 't.json'
         source.write_text(json.dumps({'id': 't', 'messages': [{'role': 'tool', 'content': 'x' * 20000}]}, sort_keys=True) + '\n')
@@ -63,6 +64,7 @@ class ReviewIntegration(unittest.TestCase):
         self.assertNotEqual(self.cli('source', '--thread', 't').returncode, 0)
 
     def test_sidecar_tamper_after_begin_blocks_commit(self):
+        (self.f.transcript.parent / "body.json").unlink()
         self.f.transcript.write_text('SESSION t fixture\n')
         source = self.f.transcript.parent / 't.json'
         source.write_text('{"id":"t","messages":[]}')
@@ -70,7 +72,8 @@ class ReviewIntegration(unittest.TestCase):
         self.f.begin()
         self.cli('read', '--thread', str(self.f.transcript))
         self.cli('ack', '--thread', str(self.f.transcript))
-        self.cli('complete', '--thread', str(self.f.transcript), '--status', 'analyzed', '--source-complete')
+        self.assertEqual(self.cli('recover', '--thread', 't').returncode, 0)
+        self.assertEqual(self.cli('complete', '--thread', str(self.f.transcript), '--status', 'analyzed', '--source-complete').returncode, 0)
         source.write_text('changed')
         self.assertNotEqual(self.cli('commit').returncode, 0)
 
@@ -112,6 +115,11 @@ class ReviewIntegration(unittest.TestCase):
         t = batch2 / 't.txt'
         t.write_text('transcript body\n')
         (batch2 / 'manifest.json').write_text(json.dumps({'batch_id': 'batch-two', 'source': 'alma', 'advances_watermark': True, 'source_boundary': '2026-11-10T12:00:00+00:00', 'source_hash': 'second', 'transcripts': ['t.txt'], 'transcript_hashes': {'t.txt': hashlib.sha256(t.read_bytes()).hexdigest()}}))
+        source = batch2 / 'body.json'
+        source.write_bytes((self.f.transcript.parent / 'body.json').read_bytes())
+        metadata = json.loads((batch2 / 'manifest.json').read_text())
+        metadata['source_files'] = {'body.json': hashlib.sha256(source.read_bytes()).hexdigest()}
+        (batch2 / 'manifest.json').write_text(json.dumps(metadata))
         self.assertEqual(self.cli('begin', '--batch', str(batch2)).returncode, 0)
         self.f.transcript = t
         self.f.finish_transcript()

@@ -83,6 +83,21 @@ if [ "$1" = threads ]; then echo '[{"id":"t","updatedAt":"2026-11-09T12:00:00Z"}
         self.assertEqual(checkpoint.read_text(), "sentinel\\n")
         self.assertEqual(list((self.root / ".raw").iterdir()), [])
 
+    def test_alma_export_preserves_page_coverage_and_tool_identity(self):
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        alma = bindir / "alma"
+        alma.write_text('''#!/bin/sh
+printf '%s\\n' '{"messages":[{"id":"m1","message":{"id":"m1","role":"assistant","parts":[{"type":"tool-Bash","toolCallId":"call-1","input":{},"output":{"output":"saved"}}]}}],"offset":0,"total":1,"hasMore":false,"nextOffset":null,"missingMessageIds":["missing-1"],"contentMode":"original","sourceTextTruncated":true,"scope":"active-path"}'
+''', encoding="utf-8")
+        alma.chmod(0o755)
+        result = self.run_wiki("--source", "alma", "--thread", "t", path=bindir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = json.loads(next((self.root / ".raw").glob("*/*/t.json")).read_text())
+        self.assertEqual(source["messages"][0]["content"][1]["toolCallId"], "call-1")
+        self.assertEqual(source["source_pages"][0]["missingMessageIds"], ["missing-1"])
+        self.assertTrue(source["source_pages"][0]["sourceTextTruncated"])
+
     def test_no_source_does_not_call_alma(self):
         bindir = Path(self.tmp.name) / "bin"
         bindir.mkdir()

@@ -222,6 +222,9 @@ expect_rc "a fact may link into solutions/" 0 bash "$WIKI_BIN" verify
 echo "11. dream exporter behavior through the public command"
 if python3 "$PKG/tests/test_dream_export.py"; then ok "generic and explicit Alma exporter contracts"; else bad "generic and explicit Alma exporter contracts"; fi
 
+echo "12. historical source recovery through the public command"
+if (cd "$PKG" && python3 -m unittest tests.test_dream_original); then ok "historical evidence fallback and coverage"; else bad "historical evidence fallback and coverage"; fi
+
 echo "13. nothing is written outside the content root"
 seed "$TMP/i"; export WIKI_HOME="$TMP/i"
 before="$(find "$PKG" -newer "$PKG/scripts/wiki" -not -path "*/.git/*" -type f 2>/dev/null | wc -l | tr -d ' ')"
