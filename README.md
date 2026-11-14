@@ -173,11 +173,13 @@ this native helper.
 
 ### Agent integration and existing installations
 
-Append [assets/AGENTS-block.md](assets/AGENTS-block.md) to the instruction file
-your host reads. For native Windows, use only its solution search/write policy;
-omit Bash-only graph verification and dream instructions. No scheduler is
-installed automatically. Schedule housekeeping or an agent's dream pass only
-when you want those tasks to run.
+Add the short trigger in [assets/AGENTS-block.md](assets/AGENTS-block.md) to the
+instruction file your host reads. The skill entry selects read/write, setup or
+dream references on demand; do not paste the full protocol into every task.
+Resolve the installed CLI first. This repository's PowerShell port has the
+older solution command set; a separately installed native adapter can have a
+different schema and contract. Do not replace one based on a filename alone.
+No scheduler is installed automatically. Schedule maintenance only when wanted.
 
 Hosts that scan skill directories can install this repo as a skill (`SKILL.md`
 is at the root). Set BUGWIKI_PKG to that installed directory and follow the
