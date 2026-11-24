@@ -1,6 +1,12 @@
 Paths in commands are relative to the skill package root unless stated otherwise.
 
-## The dream (nightly pass)
+> **Status: Retired / Legacy.** Automated nightly dream passes are retired and
+> should not be scheduled or run in normal workflows. Use `bugwiki` manually
+> for costly `solutions/` and verified `facts/`, and use session-search tools
+> for cross-session transcript lookup. The procedure below is retained only for
+> legacy reference and inspecting existing `.dream/` artifacts.
+
+## The dream (nightly pass — legacy)
 
 The dream is a **means**: its output lands in this same wiki as `facts/` pages,
 not in a separate store. Export, manifest-led review, and verified commit form the workflow; analysis is the agent step:
