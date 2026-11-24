@@ -1,6 +1,6 @@
 ---
 name: bugwiki
-description: "Use before debugging or relying on remembered state, and for a costly fix worth retaining. Load dream/maintenance procedures only for an explicit memory-maintenance task."
+description: "Use before debugging or relying on remembered state, and for a costly fix or verified fact worth retaining. Manual on-demand store; nightly dream automation is retired."
 ---
 
 # bugwiki
@@ -14,7 +14,5 @@ Use before debugging or acting on recalled operational state. Resolve the instal
 Keep code and the machine-local knowledge store separate. Never store credentials. A solution needs real investigation cost; a fact needs traceable evidence. Preserve old state and supersession when a fact changes.
 
 - For a write, validity/schema question or unsupported command, read [read/write contracts](references/read-write.md).
-- Only for a requested transcript/dream pass, read [dream policy](references/dream.md) and [recovery](docs/dream-recovery.md).
 - Only for installation/migration, read [setup](references/setup.md) and the [README](README.md).
-
-Dream automation must not change AGENTS.md or promote global rules. The short read path does not require loading the dream or installation procedures.
+- **Nightly dream automation is retired**: do not schedule or run dream passes in normal workflows (historical notes remain in [dream policy](references/dream.md) and [recovery](docs/dream-recovery.md) for legacy reference only).

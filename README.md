@@ -1,8 +1,13 @@
 # bugwiki
 
 A local Markdown knowledge graph for coding agents. Keep costly bug fixes and
-sourced facts in one searchable store, with typed links, validity dates, and a
-transcript-to-fact workflow called the **dream**.
+sourced facts in one searchable store, with typed links and validity dates.
+
+> **Status note:** Automated nightly **dream** passes are retired. Recommended
+> usage is manual/on-demand `wiki find / show / new / verify / lint` for
+> high-cost `solutions/` and verified `facts/`. The legacy `dream` subcommands
+> and [recovery docs](docs/dream-recovery.md) remain in the repository for
+> backward compatibility only.
 
 A solution records the exact symptom, cause, fix, failed attempts, and verification.
 A fact records something now true, its source, and when it stops being current.
