@@ -31,6 +31,12 @@ STALE_PROMOTED_DAYS="${WIKI_PROMOTED_STALE_DAYS:-90}"  # a promoted rule that st
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
+date_epoch() { # portable YYYY-MM-DD -> epoch seconds (BSD date, GNU date, or python3)
+  date -j -f %Y-%m-%d "$1" +%s 2>/dev/null \
+    || date -d "$1" +%s 2>/dev/null \
+    || python3 -c "import datetime,sys; print(int(datetime.datetime.strptime(sys.argv[1], '%Y-%m-%d').timestamp()))" "$1" 2>/dev/null
+}
+
 field() { # field <file> <key>
   awk -v k="$2" '
     /^---[[:space:]]*$/ { n++; next }
@@ -325,7 +331,7 @@ cmd_stale() {
     kind="$(node_kind "$f")"
     exp="$(field "$f" expires)"
     if [ -n "$exp" ] && [ "$exp" != null ]; then
-      epoch="$(date -j -f %Y-%m-%d "$exp" +%s 2>/dev/null || echo 0)"
+      epoch="$(date_epoch "$exp" || echo 0)"
       if [ "$epoch" -gt 0 ] && [ "$now" -ge "$epoch" ]; then
         printf 'expired   %s  [%s, expires %s]\n' "${f#$WIKI/}" "$kind" "$exp"; n=$((n + 1)); continue
       fi
@@ -334,7 +340,7 @@ cmd_stale() {
     [ -n "$seen" ] || seen="$(field "$f" last_verified)"
     [ -n "$seen" ] || seen="$(field "$f" last_seen)"
     [ -n "$seen" ] || continue
-    epoch="$(date -j -f %Y-%m-%d "$seen" +%s 2>/dev/null || echo 0)"
+    epoch="$(date_epoch "$seen" || echo 0)"
     [ "$epoch" -gt 0 ] || continue
     age=$(( (now - epoch) / 86400 ))
     local limit="$STALE_DAYS"
@@ -370,7 +376,7 @@ cmd_verify() {
       v="$(field "$f" "$d")"
       case "$v" in
         ""|null) ;;
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) date -j -f %Y-%m-%d "$v" +%s >/dev/null 2>&1 || { printf 'err  bad date %s=%s: %s\n' "$d" "$v" "${f#$WIKI/}"; bad=1; } ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) date_epoch "$v" >/dev/null || { printf 'err  bad date %s=%s: %s\n' "$d" "$v" "${f#$WIKI/}"; bad=1; } ;;
         *) printf 'err  date not YYYY-MM-DD %s=%s: %s\n' "$d" "$v" "${f#$WIKI/}"; bad=1 ;;
       esac
     done
@@ -443,7 +449,7 @@ cmd_lint() {
     case "$(node_kind "$f")" in
       fact) if [ "$(field "$f" maturity)" = promoted ]; then limit="$STALE_PROMOTED_DAYS"; else limit="$STALE_FACT_DAYS"; fi ;;
     esac
-    if [ -n "$seen" ] && epoch="$(date -j -f %Y-%m-%d "$seen" +%s 2>/dev/null)"; then
+    if [ -n "$seen" ] && epoch="$(date_epoch "$seen")"; then
       if [ $(( (now - epoch) / 86400 )) -ge "$limit" ] && [ "$status" != obsolete ]; then
         printf 'stale (%s days > %s, %s): %s\n' "$(( (now - epoch) / 86400 ))" "$limit" "$status" "${f#$WIKI/}"
       fi
@@ -462,7 +468,7 @@ cmd_housekeep() {
   mkdir -p "$WIKI/reports"
   report="$WIKI/reports/$TODAY.md"
 
-  pages="$(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')"
+  pages="$(all_pages | wc -l | tr -d ' ')"
 
   # 1. obsolete long enough to leave circulation. Age is counted from
   #    obsolete_since, not last_seen: marking a page obsolete must not archive it
@@ -475,10 +481,10 @@ cmd_housekeep() {
       odo_list="$odo_list- ${f#$WIKI/} (obsolete, no obsolete_since)\n"
       continue
     fi
-    epoch="$(date -j -f %Y-%m-%d "$oseen" +%s 2>/dev/null || echo "$now")"
+    epoch="$(date_epoch "$oseen" || echo "$now")"
     age=$(( (now - epoch) / 86400 ))
     if [ "$age" -ge "$ARCHIVE_DAYS" ]; then archive_list="$archive_list- ${f#$WIKI/} (obsolete ${age}d)\n"; fi
-  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+  done < <(all_pages)
 
   if [ "$apply" = "--apply" ]; then
     while IFS= read -r f; do
@@ -486,7 +492,7 @@ cmd_housekeep() {
       [ "$status" = obsolete ] || continue
       oseen="$(field "$f" obsolete_since)"
       [ -n "$oseen" ] || continue
-      epoch="$(date -j -f %Y-%m-%d "$oseen" +%s 2>/dev/null || echo "$now")"
+      epoch="$(date_epoch "$oseen" || echo "$now")"
       age=$(( (now - epoch) / 86400 ))
       [ "$age" -ge "$ARCHIVE_DAYS" ] || continue
       dest="$WIKI/archive/$(basename "$(dirname "$f")")"
@@ -498,7 +504,7 @@ cmd_housekeep() {
       fi
       mv "$f" "$dest/"
       archived=$((archived + 1))
-    done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+    done < <(all_pages)
     archive_list=""
     cmd_index >/dev/null
     # keep the newest reports only
@@ -516,20 +522,20 @@ cmd_housekeep() {
     # validity, not recurrence: last_verified wins, last_seen is the fallback
     seen2="$(field "$f" last_verified)"
     [ -n "$seen2" ] || seen2="$(field "$f" last_seen)"
-    epoch="$(date -j -f %Y-%m-%d "${seen2:-$TODAY}" +%s 2>/dev/null || echo "$now")"
+    epoch="$(date_epoch "${seen2:-$TODAY}" || echo "$now")"
     age=$(( (now - epoch) / 86400 ))
     status="$(field "$f" status)"
     if [ "$age" -ge "$STALE_DAYS" ] && [ "$status" != obsolete ]; then
       verify_list="$verify_list- ${f#$WIKI/} (${age}d, ${status})\n"
     fi
-  done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+  done < <(all_pages)
 
   # 3. duplicate candidates: token overlap on oneliner
   if [ "$pages" -ge "$DUP_MIN_PAGES" ]; then
     tsv="$(mktemp)"
     while IFS= read -r f; do
       printf '%s\t%s\n' "${f#$WIKI/}" "$(field "$f" oneliner)" >> "$tsv"
-    done < <(find "$WIKI/solutions" -type f -name '*.md' ! -name 'README.md' | sort)
+    done < <(all_pages)
     dup_list="$(awk -F'\t' -v th="$DUP_JACCARD" '
       {
         n++; path[n]=$1
