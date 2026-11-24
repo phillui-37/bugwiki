@@ -111,18 +111,13 @@ transcripts to this public repository. See [sync setup](CHEZMOI.md).
 
 ### Platform support
 
-| Feature | macOS (Bash) | Native Windows (PowerShell 5.1 / 7+) |
+| Feature | macOS / Linux / WSL (Bash) | Native Windows (PowerShell 5.1 / 7+) |
 | --- | --- | --- |
 | Solution pages: `init`, `find`, `list`, `new`, `index`, `lint`, `housekeep` | Available | Available |
-| Fact graph: `new fact`, `show`, `stale`, `verify` | Available | Not implemented |
-| Transcript export and `dream` | Available | Not implemented |
+| Fact graph: `new fact`, `show`, `stale`, `verify` | Available | Available in deployed `wiki.ps1` (`show` without graph traversal) |
+| Transcript export and `dream` (retired/legacy) | Available (legacy) | Not implemented |
 
-The file format can be shared, but the command surfaces differ. The native Windows
-helper covers solution pages only; do not interpret `wiki new fact` there as the
-Bash fact command. The Bash helper uses BSD `date -j -f` for date validation,
-staleness and archive ages. GNU/Linux (including WSL) is not fully supported: those
-commands need a compatible date utility and have not been validated there. The
-commands below are verified on macOS; do not infer Linux support from Bash alone.
+The file format is shared across macOS, Linux, and Windows. `scripts/wiki` uses a portable date helper (BSD `date -j`, GNU `date -d`, or `python3` fallback) so `verify`, `stale`, `lint`, and `housekeep` run identically on macOS and Linux/WSL. See [housekeep](references/housekeep.md) for the lightweight cross-platform consolidation workflow.
 
 ### macOS (Bash)
 

@@ -14,5 +14,6 @@ Use before debugging or acting on recalled operational state. Resolve the instal
 Keep code and the machine-local knowledge store separate. Never store credentials. A solution needs real investigation cost; a fact needs traceable evidence. Preserve old state and supersession when a fact changes.
 
 - For a write, validity/schema question or unsupported command, read [read/write contracts](references/read-write.md).
+- For lightweight periodic housekeeping and consolidation (macOS, Linux, Windows), read [housekeep](references/housekeep.md).
 - Only for installation/migration, read [setup](references/setup.md) and the [README](README.md).
 - **Nightly dream automation is retired**: do not schedule or run dream passes in normal workflows (historical notes remain in [dream policy](references/dream.md) and [recovery](docs/dream-recovery.md) for legacy reference only).
